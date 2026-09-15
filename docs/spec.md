@@ -2,7 +2,7 @@
 
 - Status: Ready
 - Document version: v1
-- Target version: authentik 2026.8.x (verified against the 2026.8.2 source)
+- Target version: authentik 2026.8.x (verified against the 2026.8.2 source and a running 2026.8.2, §8)
 - Last updated: 2026-09-15
 
 ## 1. Purpose and scope
@@ -293,8 +293,16 @@ Therefore, authentik's RBAC is used as the ownership marker.
 | Operation | API |
 |---|---|
 | Assign a permission | `POST /rbac/permissions/assigned_by_roles/{role_uuid}/assign/` |
+| Remove a permission | `PATCH /rbac/permissions/assigned_by_roles/{role_uuid}/unassign/` |
 | Look up the owner of an object | `GET /rbac/permissions/assigned_by_roles/?model=&object_pk=` |
 | List managed objects | `GET /rbac/permissions/roles/?uuid=<role_uuid>` |
+
+The markers use the concrete models: `authentik_core.application` (`object_pk` is the Application pk, which equals `pbm_uuid`), `authentik_providers_proxy.proxyprovider` or `authentik_providers_oauth2.oauth2provider` (integer pk), and `authentik_policies.policybinding` (UUID).
+
+The owner lookup API does not filter its response by object (verified in the PoC, §8).
+It returns every role that holds an object permission on the object or any model-level permission on the model (for example the built-in `authentik Read-only` role), and the `object_permissions` of each returned role contain all of that role's object permissions, not only those of the requested object.
+Therefore, the operator decides ownership by finding its own role in the response and an entry in `object_permissions` whose model and `object_pk` match.
+Because the size of the response grows with the number of managed objects, the operator reads the marker list once per resync with `GET /rbac/permissions/roles/?uuid=` and consults that list, using the owner lookup only for a single object outside a resync.
 
 The marker expresses only "whether the operator manages this object" and does not record which CR manages it.
 The mapping to CRs is handled by the CR status and a Kubernetes-side index (§3.2).
@@ -304,6 +312,7 @@ The mapping to CRs is handled by the CR status and a Kubernetes-side index (§3.
 If someone deletes this role in the UI, every marker disappears and every CR falls into the unmanaged state.
 To recover from this state without relying on the `adopt` setting, the following procedure is in place.
 
+- Deleting the role deletes all of its object permissions along with it (`RoleObjectPermission.role` is `on_delete=CASCADE`, verified in the PoC).
 - On startup and on every resync, the operator checks the role UUID and concludes that "the role was recreated" if it differs from the previous one.
 - In that case, it fetches objects with the pks recorded in each CR's status and reattaches the markers.
   Objects that can be fetched by the pk in the status were managed by the operator until just before, so they may be re-marked without going through the adoption check.
@@ -347,7 +356,9 @@ flowchart TD
 
 - **Managed fields**: only the fields explicitly set in the spec are compared and updated.
   Fields omitted from the spec are left untouched.
-  Updates send only the changed fields with PATCH.
+  Updates send only the changed fields with PATCH, with the following exceptions required by the server-side validation (verified in the PoC, §8).
+  - Proxy Provider: `mode` is always included. The serializer treats a missing `mode` as `proxy` and rejects the request with 400 unless `internal_host` is also present.
+  - PolicyBinding: `target` and the one of `group`, `user`, or `policy` that the Binding uses are always included. Without `target` the server returns 500, and without the subject field it returns 400.
 - **Drift**: managed fields are compared against the actual values, and differences are reverted to the spec values.
   Lists (scopes, redirectURIs, and others) are compared as sets, and nothing is written when there is no difference.
   authentik appends default mappings and changes the return order, so an ordered comparison would write on every reconcile.
@@ -466,6 +477,28 @@ On versions where authentik's periodic cleanup is available, this processing can
 
 The API token is expected to be issued with `intent=api` and `expiring=false`.
 API requests authenticated by token have effectively no rate limit.
+
+**Permissions of the token user**
+
+The token user does not need to be a superuser.
+A service account that belongs to a role with the following global permissions is sufficient (verified in the PoC, §8).
+
+| Purpose | Permissions |
+|---|---|
+| Ownership role (§3.1) | `authentik_rbac.view_role`, `authentik_rbac.add_role`, `authentik_rbac.change_role`, `authentik_rbac.assign_role_permissions`, `authentik_rbac.unassign_role_permissions`, `guardian.view_roleobjectpermission` |
+| Application | `authentik_core.view_application`, `add_application`, `change_application`, `delete_application` |
+| Proxy Provider | `authentik_providers_proxy.view_proxyprovider`, `add_proxyprovider`, `change_proxyprovider`, `delete_proxyprovider` |
+| OAuth2 Provider | `authentik_providers_oauth2.view_oauth2provider`, `add_oauth2provider`, `change_oauth2provider`, `delete_oauth2provider` |
+| PolicyBinding | `authentik_policies.view_policybinding`, `add_policybinding`, `change_policybinding`, `delete_policybinding` |
+| Outpost membership (§3.7) | `authentik_outposts.view_outpost`, `authentik_outposts.change_outpost` |
+| Reference resolution (§3.6) | `authentik_core.view_group`, `authentik_core.view_user`, `authentik_policies.view_policy`, `authentik_flows.view_flow`, `authentik_crypto.view_certificatekeypair`, `authentik_providers_oauth2.view_scopemapping` |
+
+The RBAC permissions are less obvious than the per-model ones.
+
+- `assign` checks `add_role` in addition to `assign_role_permissions`, and `unassign` checks `change_role` in addition to `unassign_role_permissions`, because both actions look up the role through the object permission check of the HTTP method.
+- `GET /rbac/permissions/roles/` filters by `guardian.view_roleobjectpermission`.
+  This permission belongs to a non-authentik app and is not offered by the permission picker of the web UI, so it must be assigned through the API (`POST /rbac/permissions/assigned_by_roles/{role_uuid}/assign/` with `{"permissions": ["guardian.view_roleobjectpermission"]}`).
+  The Helm chart documents this step.
 
 **Behavior**
 
@@ -588,8 +621,13 @@ This is the same approach as the layout generated by the Kubebuilder v4 helm plu
 - **Policy engine**: the result for zero Bindings is determined by `empty_result`, which is fixed to `True` in 2026.8. Group and user Bindings are evaluated statically in SQL, and `order` does not affect the result.
   `is_member` of Group includes ancestor groups.
 - **Outpost PATCH**: `validate_providers` validates against the base `Provider` when `type` is unspecified, so sending only `providers` is sufficient.
-- **RBAC**: assigning permissions (`assign`) requires `authentik_rbac.assign_role_permissions`.
+- **RBAC**: assigning permissions (`assign`) requires `authentik_rbac.assign_role_permissions` and `authentik_rbac.add_role`, and removing them (`unassign`) requires `authentik_rbac.unassign_role_permissions` and `authentik_rbac.change_role` (§4).
+  The owner lookup returns unfiltered `object_permissions` (§3.1).
   `GET /admin/version/` requires only `IsAuthenticated`.
+- **Partial updates**: `ProxyProviderSerializer.validate` and `PolicyBindingSerializer.validate` read only the request body, so a PATCH must carry `mode` for Proxy Providers and `target` plus the subject field for PolicyBindings (§3.3).
+- **Library view**: applications without a launch URL (no `meta_launch_url` and no Provider that supplies one) are not shown.
+  The per-user application list is cached, and the cache is cleared only when an Application is created, so changes to existing Applications or Bindings can take until the cache expires to appear in the library view.
+  Access checks at launch time are evaluated by the policy engine and are not affected by this cache.
 - **Searching default objects**
   - Flow: `/flows/instances/?slug=`
   - ScopeMapping: `/propertymappings/provider/scope/?managed=goauthentik.io/providers/oauth2/scope-openid`
@@ -606,16 +644,35 @@ This is the same approach as the layout generated by the Kubebuilder v4 helm plu
 - **Reference resolution**: everything is resolved to UUIDs or PKs through data sources. Flows and certificates are searched by prefix match without checking for multiple matches. This specification treats multiple matches as an error (§3.6).
 - **Testing**: a real authentik is started in CI with `goauthentik/action-setup-authentik`, and acceptance tests also run daily.
 
-## 8. Items to verify in a PoC before implementation
+## 8. PoC results
 
-The content of §7 was obtained by reading the source and has not yet been verified against a running authentik.
-The following items could not be settled from the source alone and are verified in a PoC.
+The content of §7.1 was obtained by reading the source.
+The following items could not be settled from the source alone and were verified against authentik 2026.8.2 installed with the official chart (2026.8.2) on kind.
+The environment is set up with `make authentik-up` (`hack/authentik/up.sh`), and the API checks are reproduced with `make poc` (`hack/poc/verify.sh`), which prints PASS or FAIL for each check.
 
-1. Assigning object permissions to the role and looking them up in reverse work as expected through the API token.
-2. Every user can pass an Application with zero Bindings. This is the premise of the constraints in §2.4 and §3.5.
-3. The minimum permissions required by the user of the operator's API token. Whether `authentik_rbac.assign_role_permissions` plus view / add / change / delete for each model is sufficient, and whether superuser can be avoided.
-4. Passing `https://` and `fa://` to `icon` renders as expected in the library view.
-5. Deleting and recreating the role can be recovered through the re-marking in §3.1.
+| # | Item | Result |
+|---|---|---|
+| 1 | Assigning object permissions to the role and looking them up in reverse through an API token | Holds, with a caveat on the lookup response (§3.1) |
+| 2 | Every user can pass an Application with zero Bindings | Holds |
+| 3 | Minimum permissions of the token user | Superuser is not required, but more RBAC permissions than assumed are needed (§4) |
+| 4 | `https://` and `fa://` in `icon` render in the library view | Holds |
+| 5 | Recovery from deleting and recreating the role by re-marking from status pks | Holds |
+
+1. **Marker assignment and lookup**: `assign` with `model` and `object_pk` succeeded for `authentik_core.application`, `authentik_providers_proxy.proxyprovider`, and `authentik_policies.policybinding`, both with the bootstrap token and with a non-superuser token.
+   `GET /rbac/permissions/assigned_by_roles/?model=&object_pk=` returned the owner role, and `GET /rbac/permissions/roles/?uuid=` listed exactly the assigned markers.
+   However, the owner lookup also returned roles with only model-level permissions (`authentik Read-only`), and the `object_permissions` of the owner role contained the markers of all three objects rather than only the requested one.
+   §3.1 was adjusted so that ownership is decided by matching the model and `object_pk` in the response and the marker list is read once per resync.
+2. **Zero Bindings**: for a plain internal user, `check_access` passed on an Application with no Bindings and failed on an Application with a group Binding that the user is not a member of.
+   The user's own `GET /core/applications/` listed the former and not the latter.
+   The premise of §2.4 and §3.5 holds.
+3. **Minimum permissions**: every operation of the operator (role creation, reference resolution, create / update / delete of Applications, Providers, and Bindings, marker assignment and removal, marker listing, Outpost membership, and reading and writing the OAuth2 client secret) succeeded through a token of a service account that is not a superuser and holds the permissions listed in §4.
+   Removing `assign_role_permissions`, `add_role`, `unassign_role_permissions`, `change_role`, or `guardian.view_roleobjectpermission` made the corresponding call fail with 403.
+   The run also showed that a PATCH to a Proxy Provider without `mode` returns 400 and a PATCH to a PolicyBinding without `target` returns 500, which §3.3 now accounts for.
+4. **Icons**: `meta_icon` values `https://…` and `fa://fa-book` were stored and returned unchanged in `meta_icon_url`.
+   In the library view (`/if/user/`, opened as a plain user), the `https://` icon was rendered as an `<img>` that loaded the image, and `fa://fa-book` was rendered as `<i class="icon fas fa-book">` with the Font Awesome font.
+   The library view hides Applications without a launch URL and caches the per-user list (§7.1).
+5. **Role recreation**: deleting the role removed all of its object permissions, and the owner lookup no longer found the markers.
+   A role recreated with the same name had a different UUID, and assigning the markers again from the recorded pks made the owner lookup and the marker list return all three objects.
 
 The following item is recognized as an issue but is not addressed for now.
 
