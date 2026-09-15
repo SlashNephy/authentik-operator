@@ -255,6 +255,8 @@ func TestDiffPolicyBinding(t *testing.T) {
 			desired: &api.PatchedPolicyBindingRequest{User: nullableInt32(new(int32(42)))},
 			want: &api.PatchedPolicyBindingRequest{
 				Target: new("app-pbm-uuid"),
+				Policy: nullableString(nil),
+				Group:  nullableString(nil),
 				User:   nullableInt32(new(int32(42))),
 			},
 		},

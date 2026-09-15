@@ -157,7 +157,18 @@ func DiffPolicyBinding(desired *api.PatchedPolicyBindingRequest, observed *api.P
 
 	patch.Target = firstNonNil(desired.Target, &observed.Target)
 	if desired.Policy.IsSet() || desired.Group.IsSet() || desired.User.IsSet() {
-		patch.Policy, patch.Group, patch.User = desired.Policy, desired.Group, desired.User
+		// A partial update keeps the stored value of an omitted subject, so the other subjects are sent as
+		// explicit nulls to replace the observed one instead of adding to it.
+		patch.Policy, patch.Group, patch.User = *api.NewNullableString(nil), *api.NewNullableString(nil), *api.NewNullableInt32(nil)
+		if desired.Policy.IsSet() {
+			patch.Policy = desired.Policy
+		}
+		if desired.Group.IsSet() {
+			patch.Group = desired.Group
+		}
+		if desired.User.IsSet() {
+			patch.User = desired.User
+		}
 	} else {
 		patch.Policy, patch.Group, patch.User = observed.Policy, observed.Group, observed.User
 	}
