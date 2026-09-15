@@ -1,0 +1,18 @@
+{
+  "$schema": "https://docs.renovatebot.com/renovate-schema.json",
+  "extends": [
+    "github>SlashNephy/renovate-config"
+  ],
+  "customManagers": [
+    {
+      "description": "Versions in shell scripts annotated with a `# renovate:` comment, followed by `VAR=\"${VAR:-<version>}\"`.",
+      "customType": "regex",
+      "managerFilePatterns": [
+        "/^hack/.+\\.sh$/"
+      ],
+      "matchStrings": [
+        "# renovate: datasource=(?<datasource>[a-z-.]+?) depName=(?<depName>[^\\s]+?)(?: (?:lookupName|packageName)=(?<packageName>[^\\s]+?))?(?: versioning=(?<versioning>[^\\s]+?))?(?: registryUrl=(?<registryUrl>[^\\s]+?))?\\s+[A-Z_]+=\"\\$\\{[A-Z_]+:-(?<currentValue>[^}]+)\\}\""
+      ]
+    }
+  ]
+}
