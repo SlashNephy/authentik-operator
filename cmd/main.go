@@ -39,6 +39,7 @@ import (
 
 	authentikv1alpha1 "github.com/SlashNephy/authentik-operator/api/v1alpha1"
 	"github.com/SlashNephy/authentik-operator/internal/authentik"
+	"github.com/SlashNephy/authentik-operator/internal/ownership"
 	// +kubebuilder:scaffold:imports
 )
 
@@ -87,6 +88,11 @@ func main() {
 		"A PEM file with additional CA certificates to trust when connecting to authentik.")
 	flag.BoolVar(&authentikInsecure, "authentik-insecure", false,
 		"Disable TLS certificate verification when connecting to authentik.")
+	var clusterName, ownerRole string
+	flag.StringVar(&clusterName, "cluster-name", "",
+		"The cluster identifier used in the name of the ownership role, authentik-operator-<cluster-name>.")
+	flag.StringVar(&ownerRole, "owner-role", "",
+		"The name of the ownership role. Takes precedence over --cluster-name.")
 	opts := zap.Options{
 		Development: true,
 	}
@@ -94,6 +100,12 @@ func main() {
 	flag.Parse()
 
 	ctrl.SetLogger(zap.New(zap.UseFlagOptions(&opts)))
+
+	roleName, err := ownership.RoleName(clusterName, ownerRole)
+	if err != nil {
+		setupLog.Error(err, "Invalid ownership role configuration")
+		os.Exit(1)
+	}
 
 	authentikClient, err := authentik.New(&authentik.Config{
 		URL:      os.Getenv("AUTHENTIK_URL"),
@@ -106,6 +118,8 @@ func main() {
 		os.Exit(1)
 	}
 	checkAuthentikVersion(authentikClient)
+	marker := ownership.NewMarker(authentikClient, roleName)
+	ensureOwnershipRole(marker)
 
 	// if the enable-http2 flag is false (the default), http/2 should be disabled
 	// due to its vulnerabilities. More specifically, disabling http/2 will
@@ -233,4 +247,18 @@ func checkAuthentikVersion(client authentik.VersionClient) {
 	if _, err := authentik.CheckVersion(ctx, client, supported, setupLog); err != nil {
 		setupLog.Error(err, "Failed to check the authentik version")
 	}
+}
+
+// ensureOwnershipRole creates the ownership role when it does not exist (docs/spec.md §3.1).
+// Failures are logged and do not stop the operator, because authentik may be temporarily unreachable at startup;
+// the role is ensured again before the first marker is read or written.
+func ensureOwnershipRole(marker *ownership.Marker) {
+	ctx, cancel := context.WithTimeout(context.Background(), versionCheckTimeout)
+	defer cancel()
+	uuid, _, err := marker.EnsureRole(ctx)
+	if err != nil {
+		setupLog.Error(err, "Failed to ensure the ownership role", "role", marker.RoleName())
+		return
+	}
+	setupLog.Info("Ensured the ownership role", "role", marker.RoleName(), "uuid", uuid)
 }
