@@ -73,7 +73,7 @@ type AuthentikApplicationReconciler struct {
 // +kubebuilder:rbac:groups=authentik.starry.blue,resources=authentikapplications,verbs=get;list;watch;create;update;patch;delete
 // +kubebuilder:rbac:groups=authentik.starry.blue,resources=authentikapplications/status,verbs=get;update;patch
 // +kubebuilder:rbac:groups=authentik.starry.blue,resources=authentikapplications/finalizers,verbs=update
-// +kubebuilder:rbac:groups="",resources=secrets,verbs=get;list;watch
+// +kubebuilder:rbac:groups="",resources=secrets,verbs=get;list;watch;create
 // +kubebuilder:rbac:groups=events.k8s.io,resources=events,verbs=create;patch
 
 // reconcileState carries one reconcile of an AuthentikApplication.
@@ -130,6 +130,11 @@ func (r *AuthentikApplicationReconciler) reconcile(ctx context.Context, s *recon
 		}
 		if s.app.Spec.Provider.Proxy != nil {
 			if err := r.reconcileOutpost(ctx, s, *providerPK); err != nil {
+				return err
+			}
+		}
+		if refs := s.resolved.OAuth2; refs != nil && refs.Credentials != nil && !refs.Credentials.SecretExists {
+			if err := r.exportCredentials(ctx, s, *providerPK); err != nil {
 				return err
 			}
 		}
@@ -232,11 +237,15 @@ func (r *AuthentikApplicationReconciler) SetupWithManager(mgr ctrl.Manager) erro
 	if err := IndexSlug(context.Background(), mgr.GetFieldIndexer()); err != nil {
 		return fmt.Errorf("failed to index %s: %w", slugIndexField, err)
 	}
+	if err := IndexCredentialsSecret(context.Background(), mgr.GetFieldIndexer()); err != nil {
+		return fmt.Errorf("failed to index %s: %w", credentialsSecretIndexField, err)
+	}
 	return ctrl.NewControllerManagedBy(mgr).
 		// Status writes do not change the generation, so they do not trigger another reconcile.
 		For(&v1alpha1.AuthentikApplication{}, builder.WithPredicates(predicate.GenerationChangedPredicate{})).
 		Watches(&v1alpha1.AuthentikApplication{}, handler.EnqueueRequestsFromMapFunc(r.sameSlugRequests),
 			builder.WithPredicates(conflictPredicate)).
+		Watches(&corev1.Secret{}, handler.EnqueueRequestsFromMapFunc(r.credentialsSecretRequests)).
 		Named("authentikapplication").
 		WithOptions(controller.Options{
 			// Outpost membership is updated with read-modify-write, so reconciles are serialized (docs/spec.md §3.7).

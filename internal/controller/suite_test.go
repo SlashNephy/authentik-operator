@@ -103,6 +103,10 @@ func run(m *testing.M) int {
 		fmt.Fprintf(os.Stderr, "failed to index the slug: %v\n", err)
 		return 1
 	}
+	if err := IndexCredentialsSecret(ctx, informers); err != nil {
+		fmt.Fprintf(os.Stderr, "failed to index the credentials Secret: %v\n", err)
+		return 1
+	}
 	go func() {
 		if err := informers.Start(ctx); err != nil {
 			fmt.Fprintf(os.Stderr, "failed to start the cache: %v\n", err)

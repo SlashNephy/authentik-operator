@@ -205,7 +205,7 @@ func createProxyProviderRequest(name string, desired *api.PatchedProxyProviderRe
 }
 
 // desiredOAuth2Provider returns the managed fields of the OAuth2 Provider. The client ID and the client secret
-// are managed separately (docs/spec.md §2.5).
+// come from the credentials (docs/spec.md §2.5).
 func desiredOAuth2Provider(provider *v1alpha1.ProviderSpec, flows *reference.Flows, refs *reference.OAuth2References) *api.PatchedOAuth2ProviderRequest {
 	oauth2 := provider.OAuth2
 	desired := &api.PatchedOAuth2ProviderRequest{
@@ -226,6 +226,15 @@ func desiredOAuth2Provider(provider *v1alpha1.ProviderSpec, flows *reference.Flo
 		LogoutMethod:           mapEnum(logoutMethods, oauth2.LogoutMethod),
 		SubMode:                mapEnum(subjectModes, oauth2.SubjectMode),
 		IssuerMode:             mapEnum(issuerModes, oauth2.IssuerMode),
+	}
+	if credentials := refs.Credentials; credentials != nil {
+		// Without the Secret the client secret is not managed until the Secret is created from authentik's value.
+		if credentials.ClientID != "" {
+			desired.ClientId = new(credentials.ClientID)
+		}
+		if credentials.SecretExists {
+			desired.ClientSecret = new(credentials.ClientSecret)
+		}
 	}
 	if oauth2.GrantTypes != nil {
 		desired.GrantTypes = make([]api.GrantTypeEnum, 0, len(oauth2.GrantTypes))
