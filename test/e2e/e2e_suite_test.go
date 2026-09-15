@@ -1,5 +1,4 @@
 //go:build e2e
-// +build e2e
 
 /*
 Copyright 2026 SlashNephy.
@@ -17,103 +16,117 @@ See the License for the specific language governing permissions and
 limitations under the License.
 */
 
+// Package e2e tests the operator installed with its chart against authentik on kind (docs/spec.md §6).
+// Run it with make test-e2e, which starts authentik with hack/authentik/up.sh and installs the operator with
+// hack/e2e/deploy.sh.
 package e2e
 
 import (
+	"context"
 	"fmt"
+	"net/http"
 	"os"
 	"os/exec"
 	"testing"
+	"time"
 
-	. "github.com/onsi/ginkgo/v2"
-	. "github.com/onsi/gomega"
+	corev1 "k8s.io/api/core/v1"
+	"k8s.io/apimachinery/pkg/runtime"
+	clientgoscheme "k8s.io/client-go/kubernetes/scheme"
+	ctrl "sigs.k8s.io/controller-runtime"
+	"sigs.k8s.io/controller-runtime/pkg/client"
 
-	"github.com/SlashNephy/authentik-operator/test/utils"
+	"github.com/SlashNephy/authentik-operator/api/v1alpha1"
+	"github.com/SlashNephy/authentik-operator/internal/authentik"
 )
 
 var (
-	// managerImage is the manager image to be built and loaded for testing.
-	managerImage = "example.com/authentik-operator:v0.0.1"
-	// shouldCleanupCertManager tracks whether CertManager was installed by this suite.
-	shouldCleanupCertManager = false
+	// k8s talks to the kind cluster in the current kubeconfig context.
+	k8s client.Client
+	// ak talks to authentik through a port-forward with the bootstrap token.
+	ak authentik.Client
+	// authentikURL and authentikToken are used for API calls that the client does not cover.
+	authentikURL   string
+	authentikToken string
 )
 
-// TestE2E runs the e2e test suite to validate the solution in an isolated environment.
-// The default setup requires Kind and CertManager.
-//
-// To enable kubectl kuberc (use custom kubectl configurations), set: KUBECTL_KUBERC=true
-// By default, kuberc is disabled to ensure consistent test behavior across different environments.
-// To skip CertManager installation, set: CERT_MANAGER_INSTALL_SKIP=true
-func TestE2E(t *testing.T) {
-	RegisterFailHandler(Fail)
-	_, _ = fmt.Fprintf(GinkgoWriter, "Starting authentik-operator e2e test suite\n")
-	RunSpecs(t, "e2e suite")
+func TestMain(m *testing.M) {
+	os.Exit(run(m))
 }
 
-var _ = BeforeSuite(func() {
-	By("building the manager image")
-	cmd := exec.Command("make", "docker-build", fmt.Sprintf("IMG=%s", managerImage))
-	_, err := utils.Run(cmd)
-	ExpectWithOffset(1, err).NotTo(HaveOccurred(), "Failed to build the manager image")
-
-	// TODO(user): If you want to change the e2e test vendor from Kind,
-	// ensure the image is built and available, then remove the following block.
-	By("loading the manager image on Kind")
-	err = utils.LoadImageToKindClusterWithName(managerImage)
-	ExpectWithOffset(1, err).NotTo(HaveOccurred(), "Failed to load the manager image into Kind")
-
-	configureKubectlKubeRC()
-	setupCertManager()
-})
-
-var _ = AfterSuite(func() {
-	teardownCertManager()
-})
-
-// Disable kubectl kuberc by default for test isolation.
-// This prevents local kubectl configurations from affecting test behavior.
-// To enable kuberc, set: KUBECTL_KUBERC=true
-func configureKubectlKubeRC() {
-	if os.Getenv("KUBECTL_KUBERC") != "true" {
-		By("disabling kubectl kuberc for test isolation")
-		err := os.Setenv("KUBECTL_KUBERC", "false")
-		ExpectWithOffset(1, err).NotTo(HaveOccurred(), "Failed to disable kubectl kuberc")
-		_, _ = fmt.Fprintf(GinkgoWriter,
-			"kubectl kuberc disabled for consistent test behavior (override with KUBECTL_KUBERC=true)\n")
-	} else {
-		_, _ = fmt.Fprintf(GinkgoWriter, "kubectl kuberc enabled (KUBECTL_KUBERC=true)\n")
+func getenv(key, fallback string) string {
+	if value := os.Getenv(key); value != "" {
+		return value
 	}
+	return fallback
 }
 
-// setupCertManager installs CertManager if needed for webhook tests.
-// Skips installation if CERT_MANAGER_INSTALL_SKIP=true or if already present.
-func setupCertManager() {
-	if os.Getenv("CERT_MANAGER_INSTALL_SKIP") == "true" {
-		_, _ = fmt.Fprintf(GinkgoWriter, "Skipping CertManager installation (CERT_MANAGER_INSTALL_SKIP=true)\n")
-		return
+func run(m *testing.M) int {
+	namespace := getenv("AUTHENTIK_NAMESPACE", "authentik")
+	release := getenv("AUTHENTIK_RELEASE", "authentik")
+	port := getenv("AUTHENTIK_LOCAL_PORT", "9100")
+
+	scheme := runtime.NewScheme()
+	if err := clientgoscheme.AddToScheme(scheme); err != nil {
+		return fail("register the Kubernetes types", err)
+	}
+	if err := v1alpha1.AddToScheme(scheme); err != nil {
+		return fail("register the API types", err)
+	}
+	cfg, err := ctrl.GetConfig()
+	if err != nil {
+		return fail("load the kubeconfig", err)
+	}
+	if k8s, err = client.New(cfg, client.Options{Scheme: scheme}); err != nil {
+		return fail("create a Kubernetes client", err)
 	}
 
-	By("checking if CertManager is already installed")
-	if utils.IsCertManagerCRDsInstalled() {
-		_, _ = fmt.Fprintf(GinkgoWriter, "CertManager is already installed. Skipping installation.\n")
-		return
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	bootstrap := &corev1.Secret{}
+	if err := k8s.Get(ctx, client.ObjectKey{Namespace: namespace, Name: "authentik-bootstrap"}, bootstrap); err != nil {
+		return fail("read the authentik bootstrap Secret", err)
+	}
+	authentikToken = string(bootstrap.Data["AUTHENTIK_BOOTSTRAP_TOKEN"])
+
+	service := "svc/" + release + "-server"
+	portForward := exec.CommandContext(ctx, "kubectl", "-n", namespace, "port-forward", service, port+":80")
+	if err := portForward.Start(); err != nil {
+		return fail("start the port-forward to authentik", err)
+	}
+	defer func() { _ = portForward.Process.Kill() }()
+
+	authentikURL = "http://localhost:" + port
+	if err := waitForAuthentik(ctx); err != nil {
+		return fail("wait for authentik", err)
+	}
+	if ak, err = authentik.New(&authentik.Config{URL: authentikURL, Token: authentikToken}); err != nil {
+		return fail("create the authentik client", err)
 	}
 
-	// Mark for cleanup before installation to handle interruptions and partial installs.
-	shouldCleanupCertManager = true
-
-	By("installing CertManager")
-	Expect(utils.InstallCertManager()).To(Succeed(), "Failed to install CertManager")
+	return m.Run()
 }
 
-// teardownCertManager uninstalls CertManager if it was installed by setupCertManager.
-// This ensures we only remove what we installed.
-func teardownCertManager() {
-	if !shouldCleanupCertManager {
-		_, _ = fmt.Fprintf(GinkgoWriter, "Skipping CertManager cleanup (not installed by this suite)\n")
-		return
+func waitForAuthentik(ctx context.Context) error {
+	deadline := time.Now().Add(2 * time.Minute)
+	for time.Now().Before(deadline) {
+		request, err := http.NewRequestWithContext(ctx, http.MethodGet, authentikURL+"/-/health/ready/", nil)
+		if err != nil {
+			return err
+		}
+		if response, err := http.DefaultClient.Do(request); err == nil {
+			_ = response.Body.Close()
+			if response.StatusCode == http.StatusOK {
+				return nil
+			}
+		}
+		time.Sleep(time.Second)
 	}
+	return fmt.Errorf("authentik at %s is not ready", authentikURL)
+}
 
-	By("uninstalling CertManager")
-	utils.UninstallCertManager()
+func fail(action string, err error) int {
+	fmt.Fprintf(os.Stderr, "failed to %s: %v\n", action, err)
+	return 1
 }

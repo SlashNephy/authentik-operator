@@ -1,0 +1,19 @@
+apiVersion: v2
+name: authentik-operator
+description: Manages authentik Applications, Providers, and access rights declaratively
+type: application
+
+version: 0.1.0
+appVersion: "0.1.0"
+
+keywords:
+  - kubernetes
+  - operator
+  - authentik
+
+home: https://github.com/SlashNephy/authentik-operator
+sources:
+  - https://github.com/SlashNephy/authentik-operator
+
+annotations:
+  kubebuilder.io/generated-by: kubebuilder

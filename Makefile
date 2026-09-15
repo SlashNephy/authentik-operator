@@ -63,36 +63,13 @@ vet: ## Run go vet against code.
 test: manifests generate fmt vet setup-envtest ## Run tests.
 	KUBEBUILDER_ASSETS="$(shell "$(ENVTEST)" use $(ENVTEST_K8S_VERSION) --bin-dir "$(LOCALBIN)" -p path)" go test $$(go list ./... | grep -v /e2e) -coverprofile cover.out
 
-# TODO(user): To use a different vendor for e2e tests, modify the setup under 'tests/e2e'.
-# The default setup assumes Kind is pre-installed and builds/loads the Manager Docker image locally.
-# kubectl kuberc is disabled by default for test isolation; enable with:
-# - KUBECTL_KUBERC=true
-# CertManager is installed by default; skip with:
-# - CERT_MANAGER_INSTALL_SKIP=true
-KIND_CLUSTER ?= authentik-operator-test-e2e
-
-.PHONY: setup-test-e2e
-setup-test-e2e: ## Set up a Kind cluster for e2e tests if it does not exist
-	@command -v $(KIND) >/dev/null 2>&1 || { \
-		echo "Kind is not installed. Please install Kind manually."; \
-		exit 1; \
-	}
-	@case "$$($(KIND) get clusters)" in \
-		*"$(KIND_CLUSTER)"*) \
-			echo "Kind cluster '$(KIND_CLUSTER)' already exists. Skipping creation." ;; \
-		*) \
-			echo "Creating Kind cluster '$(KIND_CLUSTER)'..."; \
-			$(KIND) create cluster --name $(KIND_CLUSTER) ;; \
-	esac
-
 .PHONY: test-e2e
-test-e2e: setup-test-e2e manifests generate fmt vet ## Run the e2e tests. Expected an isolated environment using Kind.
-	KIND=$(KIND) KIND_CLUSTER=$(KIND_CLUSTER) go test -tags=e2e ./test/e2e/ -v -ginkgo.v
-	$(MAKE) cleanup-test-e2e
+test-e2e: authentik-up e2e-deploy ## Run the e2e tests against authentik and the operator chart on kind.
+	go test -tags=e2e ./test/e2e/ -v -count=1 -timeout 30m
 
-.PHONY: cleanup-test-e2e
-cleanup-test-e2e: ## Tear down the Kind cluster used for e2e tests
-	@$(KIND) delete cluster --name $(KIND_CLUSTER)
+.PHONY: e2e-deploy
+e2e-deploy: ## Build the manager image and install the operator chart into the kind cluster started by authentik-up.
+	hack/e2e/deploy.sh
 
 .PHONY: lint
 lint: ## Run golangci-lint linter
@@ -221,3 +198,52 @@ authentik-down: ## Delete the kind cluster started by authentik-up.
 .PHONY: poc
 poc: ## Verify the assumptions in docs/spec.md §8 against the authentik started by authentik-up.
 	hack/poc/verify.sh
+
+##@ Helm Deployment
+
+## Helm binary to use for deploying the chart
+HELM ?= helm
+## Namespace to deploy the Helm release
+HELM_NAMESPACE ?= authentik-operator-system
+## Name of the Helm release
+HELM_RELEASE ?= authentik-operator
+## Path to the Helm chart directory
+HELM_CHART_DIR ?= charts/chart
+## Additional arguments to pass to helm commands
+HELM_EXTRA_ARGS ?=
+
+.PHONY: install-helm
+install-helm: ## Check that Helm is installed. It is pinned by mise (see mise.toml).
+	@command -v $(HELM) >/dev/null 2>&1 || { echo "Helm is not installed. Run mise install."; exit 1; }
+
+.PHONY: helm-lint
+helm-lint: install-helm ## Lint the Helm chart and render it with the required values.
+	$(HELM) lint $(HELM_CHART_DIR) --strict --set clusterName=ci --set authentik.url=https://authentik.example.com --set authentik.token.secretName=authentik-token
+	$(HELM) template $(HELM_RELEASE) $(HELM_CHART_DIR) --set clusterName=ci --set authentik.url=https://authentik.example.com --set authentik.token.secretName=authentik-token --set authentik.ca.secretName=authentik-ca >/dev/null
+
+.PHONY: helm-deploy
+helm-deploy: install-helm ## Deploy manager to the K8s cluster via Helm. Specify an image with IMG.
+	$(HELM) upgrade --install $(HELM_RELEASE) $(HELM_CHART_DIR) \
+		--namespace $(HELM_NAMESPACE) \
+		--create-namespace \
+		--set manager.image.repository=$${IMG%:*} \
+		--set manager.image.tag=$${IMG##*:} \
+		--wait \
+		--timeout 5m \
+		$(HELM_EXTRA_ARGS)
+
+.PHONY: helm-uninstall
+helm-uninstall: ## Uninstall the Helm release from the K8s cluster.
+	$(HELM) uninstall $(HELM_RELEASE) --namespace $(HELM_NAMESPACE)
+
+.PHONY: helm-status
+helm-status: ## Show Helm release status.
+	$(HELM) status $(HELM_RELEASE) --namespace $(HELM_NAMESPACE)
+
+.PHONY: helm-history
+helm-history: ## Show Helm release history.
+	$(HELM) history $(HELM_RELEASE) --namespace $(HELM_NAMESPACE)
+
+.PHONY: helm-rollback
+helm-rollback: ## Rollback to previous Helm release.
+	$(HELM) rollback $(HELM_RELEASE) --namespace $(HELM_NAMESPACE)

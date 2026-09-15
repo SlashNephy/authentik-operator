@@ -1,5 +1,6 @@
 # Build the manager binary
-FROM golang:1.27 AS builder
+# The builder runs on the build platform and cross-compiles for the target platform.
+FROM --platform=$BUILDPLATFORM golang:1.27 AS builder
 ARG TARGETOS
 ARG TARGETARCH
 

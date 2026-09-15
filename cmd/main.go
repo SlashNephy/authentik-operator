@@ -39,6 +39,9 @@ import (
 
 	authentikv1alpha1 "github.com/SlashNephy/authentik-operator/api/v1alpha1"
 	"github.com/SlashNephy/authentik-operator/internal/authentik"
+	"github.com/SlashNephy/authentik-operator/internal/controller"
+	"github.com/SlashNephy/authentik-operator/internal/ownership"
+	"github.com/SlashNephy/authentik-operator/internal/reference"
 	// +kubebuilder:scaffold:imports
 )
 
@@ -87,6 +90,18 @@ func main() {
 		"A PEM file with additional CA certificates to trust when connecting to authentik.")
 	flag.BoolVar(&authentikInsecure, "authentik-insecure", false,
 		"Disable TLS certificate verification when connecting to authentik.")
+	var clusterName, ownerRole string
+	var resyncInterval time.Duration
+	var markerGC bool
+	flag.BoolVar(&markerGC, "marker-gc", true,
+		"Remove ownership markers of objects deleted outside the operator at every resync. "+
+			"Disable it on authentik versions that clean up orphaned object permissions themselves.")
+	flag.DurationVar(&resyncInterval, "resync-interval", 10*time.Minute,
+		"The period of drift detection. Also the upper bound of the retry interval.")
+	flag.StringVar(&clusterName, "cluster-name", "",
+		"The cluster identifier used in the name of the ownership role, authentik-operator-<cluster-name>.")
+	flag.StringVar(&ownerRole, "owner-role", "",
+		"The name of the ownership role. Takes precedence over --cluster-name.")
 	opts := zap.Options{
 		Development: true,
 	}
@@ -94,6 +109,16 @@ func main() {
 	flag.Parse()
 
 	ctrl.SetLogger(zap.New(zap.UseFlagOptions(&opts)))
+
+	if resyncInterval <= 0 {
+		setupLog.Error(nil, "--resync-interval must be positive", "resync-interval", resyncInterval)
+		os.Exit(1)
+	}
+	roleName, err := ownership.RoleName(clusterName, ownerRole)
+	if err != nil {
+		setupLog.Error(err, "Invalid ownership role configuration")
+		os.Exit(1)
+	}
 
 	authentikClient, err := authentik.New(&authentik.Config{
 		URL:      os.Getenv("AUTHENTIK_URL"),
@@ -106,6 +131,8 @@ func main() {
 		os.Exit(1)
 	}
 	checkAuthentikVersion(authentikClient)
+	marker := ownership.NewMarker(authentikClient, roleName)
+	ensureOwnershipRole(marker)
 
 	// if the enable-http2 flag is false (the default), http/2 should be disabled
 	// due to its vulnerabilities. More specifically, disabling http/2 will
@@ -198,6 +225,19 @@ func main() {
 		os.Exit(1)
 	}
 
+	if err := (&controller.AuthentikApplicationReconciler{
+		Client:         mgr.GetClient(),
+		Scheme:         mgr.GetScheme(),
+		Authentik:      authentikClient,
+		Marker:         marker,
+		Resolver:       reference.NewResolver(authentikClient, mgr.GetClient()),
+		Recorder:       mgr.GetEventRecorder("authentik-operator"),
+		ResyncInterval: resyncInterval,
+		MarkerGC:       markerGC,
+	}).SetupWithManager(mgr); err != nil {
+		setupLog.Error(err, "Failed to create controller", "controller", "authentikapplication")
+		os.Exit(1)
+	}
 	// +kubebuilder:scaffold:builder
 
 	if err := mgr.AddHealthzCheck("healthz", healthz.Ping); err != nil {
@@ -233,4 +273,18 @@ func checkAuthentikVersion(client authentik.VersionClient) {
 	if _, err := authentik.CheckVersion(ctx, client, supported, setupLog); err != nil {
 		setupLog.Error(err, "Failed to check the authentik version")
 	}
+}
+
+// ensureOwnershipRole creates the ownership role when it does not exist (docs/spec.md §3.1).
+// Failures are logged and do not stop the operator, because authentik may be temporarily unreachable at startup;
+// the role is ensured again before the first marker is read or written.
+func ensureOwnershipRole(marker *ownership.Marker) {
+	ctx, cancel := context.WithTimeout(context.Background(), versionCheckTimeout)
+	defer cancel()
+	uuid, _, err := marker.EnsureRole(ctx)
+	if err != nil {
+		setupLog.Error(err, "Failed to ensure the ownership role", "role", marker.RoleName())
+		return
+	}
+	setupLog.Info("Ensured the ownership role", "role", marker.RoleName(), "uuid", uuid)
 }

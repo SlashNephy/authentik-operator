@@ -6,12 +6,17 @@ cliVersion: 4.15.0
 domain: starry.blue
 layout:
 - go.kubebuilder.io/v4
+plugins:
+  helm.kubebuilder.io/v2-alpha:
+    manifests: dist/install.yaml
+    output: charts
 projectName: authentik-operator
 repo: github.com/SlashNephy/authentik-operator
 resources:
 - api:
     crdVersion: v1
     namespaced: true
+  controller: true
   domain: starry.blue
   group: authentik
   kind: AuthentikApplication
