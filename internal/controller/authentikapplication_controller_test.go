@@ -718,3 +718,169 @@ func TestReconcileConflict(t *testing.T) {
 	require.NoError(t, err)
 	assert.Equal(t, application.Pk, got.Status.ApplicationPK, "the marked Application of the former winner is taken over")
 }
+
+// manualApplication creates an Application with a forward auth Proxy Provider and a Binding for admins in the
+// fake, as if they had been created in the UI, and returns the Application.
+func (f *fixture) manualApplication(t *testing.T, name, host string) *api.Application {
+	t.Helper()
+	ctx := t.Context()
+	authorization, err := f.authentik.FindFlowsBySlug(ctx, authorizationSlug)
+	require.NoError(t, err)
+	invalidation, err := f.authentik.FindFlowsBySlug(ctx, invalidationSlug)
+	require.NoError(t, err)
+	provider, err := f.authentik.CreateProxyProvider(ctx, &api.ProxyProviderRequest{
+		Name: "manual-" + f.slug, AuthorizationFlow: authorization[0].Pk, InvalidationFlow: invalidation[0].Pk,
+		ExternalHost: host, Mode: new(api.PROXYMODE_FORWARD_SINGLE),
+	})
+	require.NoError(t, err)
+	application, err := f.authentik.CreateApplication(ctx, &api.ApplicationRequest{
+		Name: name, Slug: f.slug, Provider: *api.NewNullableInt32(&provider.Pk), MetaLaunchUrl: new(externalHost),
+		PolicyEngineMode: new(api.POLICYENGINEMODE_ANY),
+	})
+	require.NoError(t, err)
+	_, err = f.authentik.CreatePolicyBinding(ctx, &api.PolicyBindingRequest{
+		Target: application.PbmUuid, Group: *api.NewNullableString(&f.admins.Pk), Order: 0,
+	})
+	require.NoError(t, err)
+	f.authentik.takeWrites()
+	return application
+}
+
+func (f *fixture) adoptSpec(policy v1alpha1.AdoptionPolicy) v1alpha1.AuthentikApplicationSpec {
+	spec := f.proxySpec()
+	spec.Adopt = new(policy)
+	return spec
+}
+
+func TestReconcileAdoptsMatchingApplication(t *testing.T) {
+	t.Parallel()
+
+	for _, policy := range []v1alpha1.AdoptionPolicy{v1alpha1.AdoptionPolicyIfMatch, v1alpha1.AdoptionPolicyForce} {
+		t.Run(string(policy), func(t *testing.T) {
+			t.Parallel()
+			f := newFixture(t)
+			application := f.manualApplication(t, testName, externalHost)
+			ctx := t.Context()
+			// A second Binding that no rule matches stays unmanaged.
+			legacy, err := f.authentik.CreatePolicyBinding(ctx, &api.PolicyBindingRequest{
+				Target: application.PbmUuid, Group: *api.NewNullableString(new(f.authentik.AddGroup("legacy").Pk)), Order: 5,
+			})
+			require.NoError(t, err)
+			f.authentik.takeWrites()
+
+			_, got, err := f.reconcile(t, f.create(t, f.adoptSpec(policy)))
+			require.NoError(t, err)
+			assertReady(t, got, metav1.ConditionTrue, v1alpha1.ReasonReconciled)
+			assert.Equal(t, application.Pk, got.Status.ApplicationPK)
+			assert.Equal(t, int64(*application.Provider.Get()), *got.Status.ProviderPK, "the attached Provider is adopted")
+			assert.Empty(t, got.Status.AdoptionDiff)
+
+			writes := f.authentik.takeWrites()
+			assert.NotContains(t, writes, "CreateProxyProvider")
+			assert.NotContains(t, writes, "PatchApplication")
+			assert.NotContains(t, writes, "PatchProxyProvider")
+			assert.Equal(t, 1, countOf(writes, "CreatePolicyBinding"), "only the Binding for bob is created; the one for admins is adopted")
+
+			bindings, err := f.authentik.ListPolicyBindings(ctx, application.PbmUuid)
+			require.NoError(t, err)
+			require.Len(t, bindings, 3)
+			assert.NotContains(t, got.Status.BindingUUIDs, legacy.Pk)
+			managed := f.managed(t)
+			assert.Contains(t, managed, applicationObject(application))
+			assert.NotContains(t, managed, bindingObject(legacy.Pk))
+			assert.Contains(t, eventReasons(f.events()), "Normal Adopted")
+		})
+	}
+}
+
+func countOf(values []string, value string) int {
+	count := 0
+	for _, v := range values {
+		if v == value {
+			count++
+		}
+	}
+	return count
+}
+
+func TestReconcileIfMatchReportsDiff(t *testing.T) {
+	t.Parallel()
+	f := newFixture(t)
+	f.manualApplication(t, "Manual", "https://manual.example.com")
+
+	app := f.create(t, f.adoptSpec(v1alpha1.AdoptionPolicyIfMatch))
+	result, got, err := f.reconcile(t, app)
+	require.NoError(t, err)
+	assert.Equal(t, resyncInterval, result.RequeueAfter)
+	assertReady(t, got, metav1.ConditionFalse, v1alpha1.ReasonAdoptionDiff)
+	assert.Equal(t, []v1alpha1.FieldDiff{
+		{Field: "name", Desired: testName, Actual: "Manual"},
+		{Field: "provider.proxy.forwardAuthSingle.externalHost", Desired: externalHost, Actual: "https://manual.example.com"},
+	}, got.Status.AdoptionDiff)
+	assert.Empty(t, f.authentik.takeWrites())
+	assert.Empty(t, f.managed(t))
+
+	// Switching to Force overwrites the differences and clears the diff.
+	got.Spec.Adopt = new(v1alpha1.AdoptionPolicyForce)
+	require.NoError(t, k8sClient.Update(t.Context(), got))
+	_, adopted, err := f.reconcile(t, got)
+	require.NoError(t, err)
+	assertReady(t, adopted, metav1.ConditionTrue, v1alpha1.ReasonReconciled)
+	assert.Empty(t, adopted.Status.AdoptionDiff)
+	assert.Subset(t, f.authentik.takeWrites(), []string{"PatchApplication", "PatchProxyProvider"})
+
+	application, err := f.authentik.GetApplication(t.Context(), f.slug)
+	require.NoError(t, err)
+	assert.Equal(t, testName, application.Name)
+}
+
+func TestReconcileAdoptionCreatesMissingProvider(t *testing.T) {
+	t.Parallel()
+	f := newFixture(t)
+	application, err := f.authentik.CreateApplication(t.Context(), &api.ApplicationRequest{
+		Name: testName, Slug: f.slug, MetaLaunchUrl: new(externalHost),
+	})
+	require.NoError(t, err)
+	f.authentik.takeWrites()
+
+	_, got, err := f.reconcile(t, f.create(t, f.adoptSpec(v1alpha1.AdoptionPolicyIfMatch)))
+	require.NoError(t, err)
+	assertReady(t, got, metav1.ConditionTrue, v1alpha1.ReasonReconciled)
+	assert.Contains(t, f.authentik.takeWrites(), "CreateProxyProvider")
+	application, err = f.authentik.GetApplication(t.Context(), application.Slug)
+	require.NoError(t, err)
+	assert.Equal(t, new(int32(*got.Status.ProviderPK)), application.Provider.Get())
+}
+
+func TestReconcileAdoptionWithProviderTypeMismatch(t *testing.T) {
+	t.Parallel()
+	f := newFixture(t)
+	ctx := t.Context()
+	flows, err := f.authentik.FindFlowsBySlug(ctx, authorizationSlug)
+	require.NoError(t, err)
+	provider, err := f.authentik.CreateOAuth2Provider(ctx, &api.OAuth2ProviderRequest{
+		Name: "oauth2-" + f.slug, AuthorizationFlow: flows[0].Pk, InvalidationFlow: flows[0].Pk, RedirectUris: []api.RedirectURIRequest{},
+	})
+	require.NoError(t, err)
+	_, err = f.authentik.CreateApplication(ctx, &api.ApplicationRequest{Name: testName, Slug: f.slug, Provider: *api.NewNullableInt32(&provider.Pk)})
+	require.NoError(t, err)
+	f.authentik.takeWrites()
+
+	_, got, err := f.reconcile(t, f.create(t, f.adoptSpec(v1alpha1.AdoptionPolicyForce)))
+	require.NoError(t, err)
+	assertReady(t, got, metav1.ConditionFalse, v1alpha1.ReasonProviderTypeMismatch)
+	assert.Empty(t, f.authentik.takeWrites())
+	assert.Empty(t, f.managed(t), "nothing is marked when adoption fails")
+	assert.Empty(t, got.Status.ApplicationPK)
+}
+
+func TestFieldDiffsRedactsConfidentialValues(t *testing.T) {
+	t.Parallel()
+
+	patch := &api.PatchedOAuth2ProviderRequest{ClientSecret: new("new-secret"), ClientId: new("new-id")}
+	observed := &api.OAuth2Provider{ClientSecret: new("old-secret"), ClientId: new("old-id")}
+	assert.Equal(t, []v1alpha1.FieldDiff{
+		{Field: "provider.oauth2.credentials.clientID", Desired: "new-id", Actual: "old-id"},
+		{Field: "provider.oauth2.credentials.secretRef.clientSecretKey", Desired: redacted, Actual: redacted},
+	}, fieldDiffs(oauth2FieldPathsFor(), patch, observed))
+}

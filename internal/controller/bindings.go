@@ -26,6 +26,7 @@ import (
 
 	"github.com/SlashNephy/authentik-operator/internal/authentik"
 	"github.com/SlashNephy/authentik-operator/internal/ownership"
+	"github.com/SlashNephy/authentik-operator/internal/reference"
 )
 
 // orderStep is the gap between the order of a new Binding and the largest existing order (docs/spec.md §2.4).
@@ -45,11 +46,25 @@ func (r *AuthentikApplicationReconciler) reconcileBindings(ctx context.Context, 
 		return err
 	}
 
-	managed, maxOrder, err := r.managedBindings(ctx, s, existing)
+	managed, unmanaged, maxOrder, err := r.managedBindings(ctx, s, existing)
 	if err != nil {
 		return err
 	}
-	matched := r.matchBindings(s, managed)
+	matched := matchBindings(s.resolved.Rules, managed, false)
+	if len(s.app.Status.BindingUUIDs) == 0 {
+		// No Binding has been recorded yet, as right after adoption: existing Bindings whose subject and negate
+		// match a rule are adopted (docs/spec.md §3.4).
+		for i, binding := range matchBindings(s.resolved.Rules, unmanaged, true) {
+			if matched[i] != nil || binding == nil {
+				continue
+			}
+			if err := r.markers().ensure(ctx, bindingObject(binding.Pk)); err != nil {
+				return err
+			}
+			matched[i] = binding
+			logf.FromContext(ctx).Info("Adopted PolicyBinding", "uuid", binding.Pk)
+		}
+	}
 
 	kept := make([]string, 0, len(s.resolved.Rules))
 	for i := range s.resolved.Rules {
@@ -92,11 +107,10 @@ func (r *AuthentikApplicationReconciler) reconcileBindings(ctx context.Context, 
 	return r.patchStatus(ctx, s)
 }
 
-// managedBindings returns the Bindings that the operator manages, marked again when needed, and the largest order
-// among all Bindings. A Binding is managed when its UUID is recorded in the status or it carries the marker.
-func (r *AuthentikApplicationReconciler) managedBindings(ctx context.Context, s *reconcileState, existing []api.PolicyBinding) ([]*api.PolicyBinding, int32, error) {
-	var managed []*api.PolicyBinding
-	var maxOrder int32
+// managedBindings splits the Bindings into those that the operator manages, marked again when needed, and the
+// others, and returns the largest order among all Bindings. A Binding is managed when its UUID is recorded in the
+// status or it carries the marker.
+func (r *AuthentikApplicationReconciler) managedBindings(ctx context.Context, s *reconcileState, existing []api.PolicyBinding) (managed, unmanaged []*api.PolicyBinding, maxOrder int32, err error) {
 	for i := range existing {
 		binding := &existing[i]
 		maxOrder = max(maxOrder, binding.Order)
@@ -104,35 +118,37 @@ func (r *AuthentikApplicationReconciler) managedBindings(ctx context.Context, s 
 		object := bindingObject(binding.Pk)
 		if slices.Contains(s.app.Status.BindingUUIDs, binding.Pk) {
 			if err := r.markers().ensure(ctx, object); err != nil {
-				return nil, 0, err
+				return nil, nil, 0, err
 			}
 			managed = append(managed, binding)
 			continue
 		}
 		marked, err := r.markers().contains(ctx, object)
 		if err != nil {
-			return nil, 0, err
+			return nil, nil, 0, err
 		}
 		if marked {
 			managed = append(managed, binding)
+		} else {
+			unmanaged = append(unmanaged, binding)
 		}
 	}
-	return managed, maxOrder, nil
+	return managed, unmanaged, maxOrder, nil
 }
 
-// matchBindings assigns managed Bindings to rules by subject, preferring a Binding whose negate also matches.
-// The result is indexed like the rules; a nil entry means that the rule needs a new Binding.
-func (r *AuthentikApplicationReconciler) matchBindings(s *reconcileState, managed []*api.PolicyBinding) []*api.PolicyBinding {
-	rules := s.resolved.Rules
+// matchBindings assigns Bindings to rules by subject, preferring a Binding whose negate also matches. When
+// exactOnly is true, a Binding with a different negate is never assigned. The result is indexed like the rules;
+// a nil entry means that no Binding was assigned to the rule.
+func matchBindings(rules []reference.Rule, bindings []*api.PolicyBinding, exactOnly bool) []*api.PolicyBinding {
 	matched := make([]*api.PolicyBinding, len(rules))
-	used := make(map[string]bool, len(managed))
+	used := make(map[string]bool, len(bindings))
 	assign := func(exactNegate bool) {
 		for i := range rules {
 			if matched[i] != nil {
 				continue
 			}
 			subject := ruleSubject(&rules[i])
-			for _, binding := range managed {
+			for _, binding := range bindings {
 				negate := binding.Negate != nil && *binding.Negate
 				if used[binding.Pk] || observedSubject(binding) != subject || (exactNegate && negate != rules[i].Negate) {
 					continue
@@ -144,7 +160,9 @@ func (r *AuthentikApplicationReconciler) matchBindings(s *reconcileState, manage
 		}
 	}
 	assign(true)
-	assign(false)
+	if !exactOnly {
+		assign(false)
+	}
 	return matched
 }
 

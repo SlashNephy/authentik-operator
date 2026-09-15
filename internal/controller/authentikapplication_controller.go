@@ -139,14 +139,17 @@ func (r *AuthentikApplicationReconciler) reconcile(ctx context.Context, s *recon
 // finish records the outcome in the status and decides how the resource is requeued.
 func (r *AuthentikApplicationReconciler) finish(ctx context.Context, s *reconcileState, err error) (ctrl.Result, error) {
 	s.app.Status.ObservedGeneration = s.app.Generation
-
 	var stop *stopError
+	if !errors.As(err, &stop) || stop.reason != v1alpha1.ReasonAdoptionDiff {
+		s.app.Status.AdoptionDiff = nil
+	}
+
 	var refErr *reference.Error
 	switch {
 	case err == nil:
 		s.app.Status.LastAppliedHash = specHash(&s.app.Spec)
 		r.setReady(s, metav1.ConditionTrue, v1alpha1.ReasonReconciled, "The Application, the Provider, and the Bindings match the spec")
-	case errors.As(err, &stop):
+	case stop != nil:
 		r.setReady(s, metav1.ConditionFalse, stop.reason, stop.message)
 	case errors.As(err, &refErr):
 		r.setReady(s, metav1.ConditionFalse, refErr.Reason(), refErr.Error())

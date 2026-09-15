@@ -19,13 +19,11 @@ package controller
 import (
 	"context"
 	"errors"
-	"fmt"
 
 	api "goauthentik.io/api/v3"
 	corev1 "k8s.io/api/core/v1"
 	logf "sigs.k8s.io/controller-runtime/pkg/log"
 
-	"github.com/SlashNephy/authentik-operator/api/v1alpha1"
 	"github.com/SlashNephy/authentik-operator/internal/authentik"
 	"github.com/SlashNephy/authentik-operator/internal/ownership"
 )
@@ -63,13 +61,16 @@ func (r *AuthentikApplicationReconciler) observeApplication(ctx context.Context,
 		return nil, err
 	}
 	if !managed {
-		return nil, &stopError{
-			reason:  v1alpha1.ReasonUnmanaged,
-			message: fmt.Sprintf("Application %q exists in authentik and is not managed by the operator", slug),
+		if err := r.adoptApplication(ctx, s, observed); err != nil {
+			return nil, err
 		}
 	}
+	// Record the pk before attaching the marker; see reconcileApplication.
 	status.ApplicationSlug, status.ApplicationPK = observed.Slug, observed.Pk
-	return observed, r.patchStatus(ctx, s)
+	if err := r.patchStatus(ctx, s); err != nil {
+		return nil, err
+	}
+	return observed, r.markers().ensure(ctx, applicationObject(observed))
 }
 
 // reconcileApplication creates the Application when observed is nil and otherwise repairs its managed fields.

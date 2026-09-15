@@ -19,7 +19,6 @@ package controller
 import (
 	"context"
 	"errors"
-	"fmt"
 	"strconv"
 
 	api "goauthentik.io/api/v3"
@@ -38,6 +37,8 @@ type observedProvider struct {
 	assignedApplication *string
 	// sync patches the managed fields that differ from the fetched Provider.
 	sync func(ctx context.Context) error
+	// diffs lists the managed fields that differ from the fetched Provider, for adoption diffs.
+	diffs func() []v1alpha1.FieldDiff
 }
 
 // providerHandler performs the operations that depend on the Provider type.
@@ -56,6 +57,7 @@ func (r *AuthentikApplicationReconciler) providerHandler(s *reconcileState) prov
 	if provider.Proxy != nil {
 		return &proxyProviderHandler{
 			client:  r.Authentik,
+			spec:    provider.Proxy,
 			desired: desiredProxyProvider(provider, s.resolved.Flows, s.resolved.Proxy),
 		}
 	}
@@ -131,10 +133,7 @@ func (r *AuthentikApplicationReconciler) findProvider(ctx context.Context, s *re
 			return nil, err
 		}
 		if otherType {
-			return nil, &stopError{
-				reason:  v1alpha1.ReasonProviderTypeMismatch,
-				message: fmt.Sprintf("Application %q has a Provider %d that is not a %s Provider", application.Slug, pk, handler.kind()),
-			}
+			return nil, providerTypeMismatch(application.Slug, pk, handler.kind())
 		}
 	}
 
@@ -153,6 +152,7 @@ func (r *AuthentikApplicationReconciler) findProvider(ctx context.Context, s *re
 
 type proxyProviderHandler struct {
 	client  authentik.Client
+	spec    *v1alpha1.ProxyProviderSpec
 	desired *api.PatchedProxyProviderRequest
 }
 
@@ -176,6 +176,13 @@ func (h *proxyProviderHandler) observe(provider *api.ProxyProvider) *observedPro
 			}
 			logf.FromContext(ctx).Info("Updated Proxy Provider", "pk", provider.Pk)
 			return nil
+		},
+		diffs: func() []v1alpha1.FieldDiff {
+			patch, changed := authentik.DiffProxyProvider(h.desired, provider)
+			if !changed {
+				return nil
+			}
+			return fieldDiffs(proxyFieldPathsFor(h.spec), patch, provider)
 		},
 	}
 }
@@ -238,6 +245,13 @@ func (h *oauth2ProviderHandler) observe(provider *api.OAuth2Provider) *observedP
 			}
 			logf.FromContext(ctx).Info("Updated OAuth2 Provider", "pk", provider.Pk)
 			return nil
+		},
+		diffs: func() []v1alpha1.FieldDiff {
+			patch, changed := authentik.DiffOAuth2Provider(h.desired, provider)
+			if !changed {
+				return nil
+			}
+			return fieldDiffs(oauth2FieldPathsFor(), patch, provider)
 		},
 	}
 }
