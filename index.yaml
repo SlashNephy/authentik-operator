@@ -1,0 +1,23 @@
+apiVersion: v1
+entries:
+  authentik-operator:
+  - annotations:
+      kubebuilder.io/generated-by: kubebuilder
+    apiVersion: v2
+    appVersion: 2026.8.0
+    created: "2026-09-15T15:45:07.992379169Z"
+    description: Manages authentik Applications, Providers, and access rights declaratively
+    digest: d55ba783a613d56035cd29161e34f9ffddc8db452e58436c688ae48e24d757d2
+    home: https://github.com/SlashNephy/authentik-operator
+    keywords:
+    - kubernetes
+    - operator
+    - authentik
+    name: authentik-operator
+    sources:
+    - https://github.com/SlashNephy/authentik-operator
+    type: application
+    urls:
+    - https://github.com/SlashNephy/authentik-operator/releases/download/v2026.8.0/authentik-operator-2026.8.0.tgz
+    version: 2026.8.0
+generated: "2026-09-15T15:45:07.991474488Z"
