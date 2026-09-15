@@ -1,0 +1,25 @@
+apiVersion: authentik.starry.blue/v1alpha1
+kind: AuthentikApplication
+metadata:
+  labels:
+    app.kubernetes.io/name: authentik-operator
+    app.kubernetes.io/managed-by: kustomize
+  name: wiki
+spec:
+  slug: wiki
+  name: Wiki
+  launchURL: https://wiki.example.com
+  icon: fa://fa-book
+  provider:
+    flows:
+      authorization:
+        slug: default-provider-authorization-implicit-consent
+      invalidation:
+        slug: default-provider-invalidation-flow
+    proxy:
+      forwardAuthSingle:
+        externalHost: https://wiki.example.com
+  access:
+    rules:
+      - group:
+          name: admins

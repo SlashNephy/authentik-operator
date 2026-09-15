@@ -1,0 +1,738 @@
+---
+apiVersion: apiextensions.k8s.io/v1
+kind: CustomResourceDefinition
+metadata:
+  annotations:
+    controller-gen.kubebuilder.io/version: v0.22.0
+  name: authentikapplications.authentik.starry.blue
+spec:
+  group: authentik.starry.blue
+  names:
+    kind: AuthentikApplication
+    listKind: AuthentikApplicationList
+    plural: authentikapplications
+    shortNames:
+    - akapp
+    singular: authentikapplication
+  scope: Namespaced
+  versions:
+  - additionalPrinterColumns:
+    - jsonPath: .spec.slug
+      name: Slug
+      type: string
+    - jsonPath: .status.conditions[?(@.type=="Ready")].status
+      name: Ready
+      type: string
+    - jsonPath: .status.conditions[?(@.type=="Ready")].reason
+      name: Reason
+      type: string
+    - jsonPath: .metadata.creationTimestamp
+      name: Age
+      type: date
+    name: v1alpha1
+    schema:
+      openAPIV3Schema:
+        description: AuthentikApplication manages an authentik Application together
+          with its Provider and access rights.
+        properties:
+          apiVersion:
+            description: |-
+              APIVersion defines the versioned schema of this representation of an object.
+              Servers should convert recognized schemas to the latest internal value, and
+              may reject unrecognized values.
+              More info: https://git.k8s.io/community/contributors/devel/sig-architecture/api-conventions.md#resources
+            type: string
+          kind:
+            description: |-
+              Kind is a string value representing the REST resource this object represents.
+              Servers may infer this from the endpoint the client submits requests to.
+              Cannot be updated.
+              In CamelCase.
+              More info: https://git.k8s.io/community/contributors/devel/sig-architecture/api-conventions.md#types-kinds
+            type: string
+          metadata:
+            type: object
+          spec:
+            description: spec defines the desired state of AuthentikApplication
+            properties:
+              access:
+                description: access defines who can access the Application.
+                properties:
+                  mode:
+                    default: Any
+                    description: mode is the policy engine mode of the Application
+                      (policy_engine_mode).
+                    enum:
+                    - Any
+                    - All
+                    type: string
+                  prune:
+                    default: false
+                    description: prune deletes Bindings on the Application that the
+                      operator does not manage.
+                    type: boolean
+                  public:
+                    default: false
+                    description: public makes the Application accessible to every
+                      user. It requires rules to be empty.
+                    type: boolean
+                  rules:
+                    description: rules are the Bindings attached to the Application.
+                    items:
+                      description: AccessRule is a Binding to a Group, a User, or
+                        a Policy.
+                      properties:
+                        group:
+                          description: group is the Group to bind. Members of child
+                            groups also pass.
+                          properties:
+                            name:
+                              description: name is the name of the object.
+                              minLength: 1
+                              type: string
+                            uuid:
+                              description: uuid is the UUID of the object.
+                              format: uuid
+                              type: string
+                          type: object
+                          x-kubernetes-validations:
+                          - message: exactly one of name or uuid must be specified
+                            rule: has(self.name) != has(self.uuid)
+                        negate:
+                          description: negate inverts the result of the Binding.
+                          type: boolean
+                        policy:
+                          description: policy is the Policy to bind.
+                          properties:
+                            name:
+                              description: name is the name of the object.
+                              minLength: 1
+                              type: string
+                            uuid:
+                              description: uuid is the UUID of the object.
+                              format: uuid
+                              type: string
+                          type: object
+                          x-kubernetes-validations:
+                          - message: exactly one of name or uuid must be specified
+                            rule: has(self.name) != has(self.uuid)
+                        user:
+                          description: user is the User to bind.
+                          properties:
+                            pk:
+                              description: pk is the primary key of the User.
+                              format: int64
+                              minimum: 1
+                              type: integer
+                            username:
+                              description: username is the username of the User.
+                              minLength: 1
+                              type: string
+                          type: object
+                          x-kubernetes-validations:
+                          - message: exactly one of username or pk must be specified
+                            rule: has(self.username) != has(self.pk)
+                      type: object
+                      x-kubernetes-validations:
+                      - message: exactly one of group, user, or policy must be specified
+                        rule: '(has(self.group) ? 1 : 0) + (has(self.user) ? 1 : 0)
+                          + (has(self.policy) ? 1 : 0) == 1'
+                    type: array
+                    x-kubernetes-list-type: atomic
+                type: object
+                x-kubernetes-validations:
+                - message: at least one rule is required unless public is true
+                  rule: (has(self.rules) && size(self.rules) > 0) || (has(self.public)
+                    && self.public)
+                - message: public must be false when rules are specified
+                  rule: '!(has(self.rules) && size(self.rules) > 0 && has(self.public)
+                    && self.public)'
+              adopt:
+                default: Never
+                description: adopt controls whether existing objects that the operator
+                  does not manage are adopted.
+                enum:
+                - Never
+                - IfMatch
+                - Force
+                type: string
+              deletionPolicy:
+                default: Retain
+                description: deletionPolicy controls what happens to the authentik
+                  objects when this resource is deleted.
+                enum:
+                - Retain
+                - Delete
+                type: string
+              description:
+                description: description is shown in the library view.
+                type: string
+              group:
+                description: group is the display group in the library view. It is
+                  not an authentik Group.
+                type: string
+              hideFromApplicationDashboard:
+                description: hideFromApplicationDashboard hides the Application from
+                  the library view (meta_hide).
+                type: boolean
+              icon:
+                description: icon is an https:// URL, a fa:// Font Awesome icon, or
+                  another path supported by the authentik file backends.
+                type: string
+              launchURL:
+                description: launchURL is the URL opened from the library view.
+                type: string
+              name:
+                description: name is the display name of the Application.
+                minLength: 1
+                type: string
+              openInNewTab:
+                description: openInNewTab opens the launch URL in a new browser tab.
+                type: boolean
+              provider:
+                description: |-
+                  provider is the Provider attached to the Application. When omitted, the Application has no Provider.
+                  Once set, it cannot be removed and its type cannot be changed.
+                properties:
+                  flows:
+                    description: flows are the flows used by the Provider.
+                    properties:
+                      authentication:
+                        description: authentication is the flow used when a user has
+                          to authenticate.
+                        properties:
+                          slug:
+                            description: slug is the slug of the Flow.
+                            minLength: 1
+                            type: string
+                          uuid:
+                            description: uuid is the UUID of the Flow.
+                            format: uuid
+                            type: string
+                        type: object
+                        x-kubernetes-validations:
+                        - message: exactly one of slug or uuid must be specified
+                          rule: has(self.slug) != has(self.uuid)
+                      authorization:
+                        description: authorization is the flow used to authorize access
+                          to the Provider.
+                        properties:
+                          slug:
+                            description: slug is the slug of the Flow.
+                            minLength: 1
+                            type: string
+                          uuid:
+                            description: uuid is the UUID of the Flow.
+                            format: uuid
+                            type: string
+                        type: object
+                        x-kubernetes-validations:
+                        - message: exactly one of slug or uuid must be specified
+                          rule: has(self.slug) != has(self.uuid)
+                      invalidation:
+                        description: invalidation is the flow used when the session
+                          ends.
+                        properties:
+                          slug:
+                            description: slug is the slug of the Flow.
+                            minLength: 1
+                            type: string
+                          uuid:
+                            description: uuid is the UUID of the Flow.
+                            format: uuid
+                            type: string
+                        type: object
+                        x-kubernetes-validations:
+                        - message: exactly one of slug or uuid must be specified
+                          rule: has(self.slug) != has(self.uuid)
+                    required:
+                    - authorization
+                    - invalidation
+                    type: object
+                  name:
+                    description: name is the Provider name. Defaults to the slug when
+                      the Provider is created.
+                    minLength: 1
+                    type: string
+                  oauth2:
+                    description: oauth2 configures an OAuth2/OpenID Provider.
+                    properties:
+                      accessCodeValidity:
+                        description: accessCodeValidity is a duration such as minutes=1.
+                        type: string
+                      accessTokenValidity:
+                        description: accessTokenValidity is a duration such as minutes=5.
+                        type: string
+                      clientType:
+                        description: clientType is the OAuth2 client type.
+                        enum:
+                        - Confidential
+                        - Public
+                        type: string
+                      credentials:
+                        description: credentials manages the client ID and client
+                          secret with a Secret as the source of truth.
+                        properties:
+                          clientID:
+                            description: clientID is the client ID. When omitted,
+                              it is read from the Secret.
+                            maxLength: 255
+                            minLength: 1
+                            type: string
+                          secretRef:
+                            description: secretRef is the Secret in the same namespace
+                              that holds the credentials.
+                            properties:
+                              clientIDKey:
+                                description: clientIDKey is the key that holds the
+                                  client ID. Defaults to client-id.
+                                minLength: 1
+                                type: string
+                              clientSecretKey:
+                                description: clientSecretKey is the key that holds
+                                  the client secret. Defaults to client-secret.
+                                minLength: 1
+                                type: string
+                              name:
+                                description: name is the name of the Secret.
+                                maxLength: 253
+                                minLength: 1
+                                type: string
+                            required:
+                            - name
+                            type: object
+                        required:
+                        - secretRef
+                        type: object
+                        x-kubernetes-validations:
+                        - message: clientID and secretRef.clientIDKey are mutually
+                            exclusive
+                          rule: '!(has(self.clientID) && has(self.secretRef.clientIDKey))'
+                      encryptionKey:
+                        description: encryptionKey is the CertificateKeyPair used
+                          to encrypt tokens.
+                        properties:
+                          name:
+                            description: name is the name of the object.
+                            minLength: 1
+                            type: string
+                          uuid:
+                            description: uuid is the UUID of the object.
+                            format: uuid
+                            type: string
+                        type: object
+                        x-kubernetes-validations:
+                        - message: exactly one of name or uuid must be specified
+                          rule: has(self.name) != has(self.uuid)
+                      grantTypes:
+                        description: grantTypes are the allowed grant types.
+                        items:
+                          description: GrantType is an OAuth2 grant type.
+                          enum:
+                          - AuthorizationCode
+                          - Implicit
+                          - Hybrid
+                          - RefreshToken
+                          - ClientCredentials
+                          - Password
+                          - DeviceCode
+                          - TokenExchange
+                          type: string
+                        type: array
+                        x-kubernetes-list-type: set
+                      includeClaimsInIDToken:
+                        description: includeClaimsInIDToken includes the user claims
+                          in the ID token.
+                        type: boolean
+                      issuerMode:
+                        description: issuerMode controls the issuer of the tokens.
+                        enum:
+                        - Global
+                        - PerProvider
+                        type: string
+                      logoutMethod:
+                        description: logoutMethod is the way logoutURI is notified.
+                        enum:
+                        - BackChannel
+                        - FrontChannel
+                        type: string
+                      logoutURI:
+                        description: logoutURI is the URI notified when the user logs
+                          out.
+                        type: string
+                      redirectURIs:
+                        description: redirectURIs are the allowed redirect URIs.
+                        items:
+                          description: RedirectURI is an allowed redirect URI.
+                          properties:
+                            matchingMode:
+                              default: Strict
+                              description: matchingMode controls how url is compared.
+                              enum:
+                              - Strict
+                              - Regex
+                              type: string
+                            type:
+                              default: Authorization
+                              description: type is the purpose of the redirect URI.
+                              enum:
+                              - Authorization
+                              - PostLogout
+                              type: string
+                            url:
+                              description: url is the redirect URI, or a regular expression
+                                when matchingMode is Regex.
+                              minLength: 1
+                              type: string
+                          required:
+                          - url
+                          type: object
+                        type: array
+                        x-kubernetes-list-type: atomic
+                      refreshTokenThreshold:
+                        description: refreshTokenThreshold is a duration such as seconds=0.
+                        type: string
+                      refreshTokenValidity:
+                        description: refreshTokenValidity is a duration such as days=30.
+                        type: string
+                      scopes:
+                        description: scopes are the ScopeMappings available to the
+                          client. Defaults to openid, email, and profile on creation.
+                        items:
+                          description: ScopeMappingReference refers to an authentik
+                            ScopeMapping by its scope name or its UUID.
+                          properties:
+                            scopeName:
+                              description: scopeName is the scope that clients request
+                                (scope_name).
+                              minLength: 1
+                              type: string
+                            uuid:
+                              description: uuid is the UUID of the ScopeMapping.
+                              format: uuid
+                              type: string
+                          type: object
+                          x-kubernetes-validations:
+                          - message: exactly one of scopeName or uuid must be specified
+                            rule: has(self.scopeName) != has(self.uuid)
+                        type: array
+                        x-kubernetes-list-type: atomic
+                      signingKey:
+                        description: signingKey is the CertificateKeyPair used to
+                          sign tokens. Defaults to the authentik self-signed certificate
+                          on creation.
+                        properties:
+                          name:
+                            description: name is the name of the object.
+                            minLength: 1
+                            type: string
+                          uuid:
+                            description: uuid is the UUID of the object.
+                            format: uuid
+                            type: string
+                        type: object
+                        x-kubernetes-validations:
+                        - message: exactly one of name or uuid must be specified
+                          rule: has(self.name) != has(self.uuid)
+                      subjectMode:
+                        description: subjectMode controls the value of the sub claim.
+                        enum:
+                        - HashedUserID
+                        - UserID
+                        - UserUUID
+                        - UserUsername
+                        - UserEmail
+                        - UserUPN
+                        type: string
+                    type: object
+                  proxy:
+                    description: proxy configures a Proxy Provider.
+                    properties:
+                      accessTokenValidity:
+                        description: accessTokenValidity is a duration such as hours=24.
+                        type: string
+                      basicAuth:
+                        description: basicAuth sends HTTP Basic credentials taken
+                          from user or group attributes to the application.
+                        properties:
+                          passwordAttribute:
+                            description: passwordAttribute is the user or group attribute
+                              that holds the password.
+                            minLength: 1
+                            type: string
+                          userAttribute:
+                            description: userAttribute is the user or group attribute
+                              that holds the username.
+                            minLength: 1
+                            type: string
+                        required:
+                        - passwordAttribute
+                        - userAttribute
+                        type: object
+                      certificate:
+                        description: certificate is the CertificateKeyPair used for
+                          TLS.
+                        properties:
+                          name:
+                            description: name is the name of the object.
+                            minLength: 1
+                            type: string
+                          uuid:
+                            description: uuid is the UUID of the object.
+                            format: uuid
+                            type: string
+                        type: object
+                        x-kubernetes-validations:
+                        - message: exactly one of name or uuid must be specified
+                          rule: has(self.name) != has(self.uuid)
+                      forwardAuthDomain:
+                        description: forwardAuthDomain uses forward auth for every
+                          application under a domain (mode=forward_domain).
+                        properties:
+                          authenticationURL:
+                            description: authenticationURL is the URL of authentik
+                              used for the domain (external_host).
+                            minLength: 1
+                            type: string
+                          cookieDomain:
+                            description: cookieDomain is the domain that the session
+                              cookie is set for.
+                            minLength: 1
+                            type: string
+                        required:
+                        - authenticationURL
+                        - cookieDomain
+                        type: object
+                      forwardAuthSingle:
+                        description: forwardAuthSingle uses forward auth for a single
+                          application (mode=forward_single).
+                        properties:
+                          externalHost:
+                            description: externalHost is the URL that users access.
+                            minLength: 1
+                            type: string
+                        required:
+                        - externalHost
+                        type: object
+                      interceptHeaderAuth:
+                        description: interceptHeaderAuth lets authentik handle the
+                          Authorization header.
+                        type: boolean
+                      outpost:
+                        description: outpost is the Outpost that serves the Provider.
+                          Defaults to the embedded outpost.
+                        properties:
+                          name:
+                            description: name is the name of the object.
+                            minLength: 1
+                            type: string
+                          uuid:
+                            description: uuid is the UUID of the object.
+                            format: uuid
+                            type: string
+                        type: object
+                        x-kubernetes-validations:
+                        - message: exactly one of name or uuid must be specified
+                          rule: has(self.name) != has(self.uuid)
+                      proxy:
+                        description: proxy runs authentik as a reverse proxy in front
+                          of the application (mode=proxy).
+                        properties:
+                          externalHost:
+                            description: externalHost is the URL that users access.
+                            minLength: 1
+                            type: string
+                          internalHost:
+                            description: internalHost is the URL of the upstream application.
+                            minLength: 1
+                            type: string
+                          internalHostSSLValidation:
+                            description: internalHostSSLValidation validates the TLS
+                              certificate of the internal host.
+                            type: boolean
+                        required:
+                        - externalHost
+                        - internalHost
+                        type: object
+                      refreshTokenValidity:
+                        description: refreshTokenValidity is a duration such as days=30.
+                        type: string
+                      unauthenticatedPaths:
+                        description: unauthenticatedPaths are regular expressions
+                          of paths that do not require authentication (skip_path_regex).
+                        items:
+                          type: string
+                        type: array
+                        x-kubernetes-list-type: atomic
+                    type: object
+                    x-kubernetes-validations:
+                    - message: exactly one of proxy, forwardAuthSingle, or forwardAuthDomain
+                        must be specified
+                      rule: '(has(self.proxy) ? 1 : 0) + (has(self.forwardAuthSingle)
+                        ? 1 : 0) + (has(self.forwardAuthDomain) ? 1 : 0) == 1'
+                required:
+                - flows
+                type: object
+                x-kubernetes-validations:
+                - message: exactly one of proxy or oauth2 must be specified
+                  rule: has(self.proxy) != has(self.oauth2)
+                - message: the provider type cannot be changed; recreate the resource
+                    instead
+                  rule: has(self.proxy) == has(oldSelf.proxy)
+              publisher:
+                description: publisher is shown in the library view.
+                type: string
+              slug:
+                description: slug is the unique identifier of the Application in authentik.
+                  It cannot be changed after creation.
+                minLength: 1
+                pattern: ^[-a-zA-Z0-9_]+$
+                type: string
+                x-kubernetes-validations:
+                - message: slug is immutable
+                  rule: self == oldSelf
+            required:
+            - access
+            - name
+            - slug
+            type: object
+            x-kubernetes-validations:
+            - message: provider cannot be removed once set; recreate the resource
+                instead
+              rule: '!has(oldSelf.provider) || has(self.provider)'
+          status:
+            description: status defines the observed state of AuthentikApplication
+            properties:
+              adoptionDiff:
+                description: adoptionDiff lists the managed fields that differ when
+                  adopt is IfMatch. Confidential values are redacted.
+                items:
+                  description: FieldDiff is a managed field whose actual value differs
+                    from the desired value.
+                  properties:
+                    actual:
+                      description: actual is the value in authentik.
+                      type: string
+                    desired:
+                      description: desired is the value in the spec.
+                      type: string
+                    field:
+                      description: field is the path of the field in the spec.
+                      type: string
+                  required:
+                  - field
+                  type: object
+                type: array
+                x-kubernetes-list-type: atomic
+              applicationPK:
+                description: applicationPK is the primary key of the managed Application.
+                type: string
+              applicationSlug:
+                description: applicationSlug is the slug of the managed Application.
+                type: string
+              bindingUUIDs:
+                description: bindingUUIDs are the UUIDs of the managed Bindings.
+                items:
+                  type: string
+                type: array
+                x-kubernetes-list-type: set
+              conditions:
+                description: conditions represent the current state of the resource.
+                items:
+                  description: Condition contains details for one aspect of the current
+                    state of this API Resource.
+                  properties:
+                    lastTransitionTime:
+                      description: |-
+                        lastTransitionTime is the last time the condition transitioned from one status to another.
+                        This should be when the underlying condition changed.  If that is not known, then using the time when the API field changed is acceptable.
+                      format: date-time
+                      type: string
+                    message:
+                      description: |-
+                        message is a human readable message indicating details about the transition.
+                        This may be an empty string.
+                      maxLength: 32768
+                      type: string
+                    observedGeneration:
+                      description: |-
+                        observedGeneration represents the .metadata.generation that the condition was set based upon.
+                        For instance, if .metadata.generation is currently 12, but the .status.conditions[x].observedGeneration is 9, the condition is out of date
+                        with respect to the current state of the instance.
+                      format: int64
+                      minimum: 0
+                      type: integer
+                    reason:
+                      description: |-
+                        reason contains a programmatic identifier indicating the reason for the condition's last transition.
+                        Producers of specific condition types may define expected values and meanings for this field,
+                        and whether the values are considered a guaranteed API.
+                        The value should be a CamelCase string.
+                        This field may not be empty.
+                      maxLength: 1024
+                      minLength: 1
+                      pattern: ^[A-Za-z]([A-Za-z0-9_,:]*[A-Za-z0-9_])?$
+                      type: string
+                    status:
+                      description: status of the condition, one of True, False, Unknown.
+                      enum:
+                      - "True"
+                      - "False"
+                      - Unknown
+                      type: string
+                    type:
+                      description: type of condition in CamelCase or in foo.example.com/CamelCase.
+                      maxLength: 316
+                      pattern: ^([a-z0-9]([-a-z0-9]*[a-z0-9])?(\.[a-z0-9]([-a-z0-9]*[a-z0-9])?)*/)?(([A-Za-z0-9][-A-Za-z0-9_.]*)?[A-Za-z0-9])$
+                      type: string
+                  required:
+                  - lastTransitionTime
+                  - message
+                  - reason
+                  - status
+                  - type
+                  type: object
+                type: array
+                x-kubernetes-list-map-keys:
+                - type
+                x-kubernetes-list-type: map
+              lastAppliedHash:
+                description: lastAppliedHash is the hash of the spec that was last
+                  applied to authentik.
+                type: string
+              observedGeneration:
+                description: observedGeneration is the generation of the spec that
+                  was last reconciled.
+                format: int64
+                type: integer
+              providerPK:
+                description: providerPK is the primary key of the managed Provider.
+                format: int64
+                type: integer
+              unmanagedBindings:
+                description: unmanagedBindings lists the Bindings on the Application
+                  that the operator does not manage.
+                items:
+                  description: UnmanagedBinding is a Binding on the Application that
+                    the operator does not manage.
+                  properties:
+                    target:
+                      description: target describes the subject of the Binding, such
+                        as group/legacy.
+                      type: string
+                    uuid:
+                      description: uuid is the UUID of the Binding.
+                      type: string
+                  required:
+                  - uuid
+                  type: object
+                type: array
+                x-kubernetes-list-type: atomic
+            type: object
+        required:
+        - spec
+        type: object
+    served: true
+    storage: true
+    subresources:
+      status: {}
