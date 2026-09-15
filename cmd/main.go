@@ -17,9 +17,11 @@ limitations under the License.
 package main
 
 import (
+	"context"
 	"crypto/tls"
 	"flag"
 	"os"
+	"time"
 
 	// Import all Kubernetes client auth plugins (e.g. Azure, GCP, OIDC, etc.)
 	// to ensure that exec-entrypoint and run can make use of them.
@@ -36,6 +38,7 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/webhook"
 
 	authentikv1alpha1 "github.com/SlashNephy/authentik-operator/api/v1alpha1"
+	"github.com/SlashNephy/authentik-operator/internal/authentik"
 	// +kubebuilder:scaffold:imports
 )
 
@@ -78,6 +81,12 @@ func main() {
 	flag.StringVar(&metricsCertKey, "metrics-cert-key", "tls.key", "The name of the metrics server key file.")
 	flag.BoolVar(&enableHTTP2, "enable-http2", false,
 		"If set, HTTP/2 will be enabled for the metrics and webhook servers")
+	var authentikCAFile string
+	var authentikInsecure bool
+	flag.StringVar(&authentikCAFile, "authentik-ca-file", "",
+		"A PEM file with additional CA certificates to trust when connecting to authentik.")
+	flag.BoolVar(&authentikInsecure, "authentik-insecure", false,
+		"Disable TLS certificate verification when connecting to authentik.")
 	opts := zap.Options{
 		Development: true,
 	}
@@ -85,6 +94,18 @@ func main() {
 	flag.Parse()
 
 	ctrl.SetLogger(zap.New(zap.UseFlagOptions(&opts)))
+
+	authentikClient, err := authentik.New(&authentik.Config{
+		URL:      os.Getenv("AUTHENTIK_URL"),
+		Token:    os.Getenv("AUTHENTIK_TOKEN"),
+		CAFile:   authentikCAFile,
+		Insecure: authentikInsecure,
+	})
+	if err != nil {
+		setupLog.Error(err, "Failed to create the authentik client")
+		os.Exit(1)
+	}
+	checkAuthentikVersion(authentikClient)
 
 	// if the enable-http2 flag is false (the default), http/2 should be disabled
 	// due to its vulnerabilities. More specifically, disabling http/2 will
@@ -192,5 +213,24 @@ func main() {
 	if err := mgr.Start(ctrl.SetupSignalHandler()); err != nil {
 		setupLog.Error(err, "Failed to run manager")
 		os.Exit(1)
+	}
+}
+
+// versionCheckTimeout bounds the startup version check.
+const versionCheckTimeout = 30 * time.Second
+
+// checkAuthentikVersion reports whether the authentik server matches the supported minor version (docs/spec.md §6).
+// Failures are logged and do not stop the operator, because authentik may be temporarily unreachable at startup.
+func checkAuthentikVersion(client authentik.VersionClient) {
+	supported, err := authentik.SupportedVersion()
+	if err != nil {
+		setupLog.Error(err, "Failed to determine the supported authentik version; skipping the version check")
+		return
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), versionCheckTimeout)
+	defer cancel()
+	if _, err := authentik.CheckVersion(ctx, client, supported, setupLog); err != nil {
+		setupLog.Error(err, "Failed to check the authentik version")
 	}
 }
