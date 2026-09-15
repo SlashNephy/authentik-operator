@@ -581,8 +581,10 @@ const (
 	ConditionTypeUnmanagedBindings = "UnmanagedBindings"
 )
 
-// Reasons of the Ready condition when it is False.
+// Reasons of the Ready condition.
 const (
+	// ReasonReconciled means the Application, the Provider, and the Bindings match the spec.
+	ReasonReconciled = "Reconciled"
 	// ReasonConflict means another resource with the same slug won.
 	ReasonConflict = "Conflict"
 	// ReasonUnmanaged means an unmanaged object exists and adopt is Never.
