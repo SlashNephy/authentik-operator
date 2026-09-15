@@ -52,6 +52,7 @@ const (
 	testName          = "Wiki"
 	oauth2Slug        = "chat"
 	normalCreated     = "Normal Created"
+	manualName        = "Manual"
 
 	opCreatePolicyBinding    = "CreatePolicyBinding"
 	opAssignObjectPermission = "AssignObjectPermission"
@@ -475,7 +476,7 @@ func TestReconcileStopsWithoutWriting(t *testing.T) {
 		{
 			name: "unmanaged Application with the slug",
 			setup: func(t *testing.T, f *fixture) v1alpha1.AuthentikApplicationSpec {
-				_, err := f.authentik.CreateApplication(t.Context(), &api.ApplicationRequest{Name: "Manual", Slug: f.slug})
+				_, err := f.authentik.CreateApplication(t.Context(), &api.ApplicationRequest{Name: manualName, Slug: f.slug})
 				require.NoError(t, err)
 				return f.proxySpec()
 			},
@@ -713,14 +714,15 @@ func TestReconcileConflict(t *testing.T) {
 	require.NoError(t, err)
 	assertReady(t, got, metav1.ConditionFalse, v1alpha1.ReasonConflict)
 
+	// Once the winner is gone, the loser takes over the slug. The winner retained the Application and removed
+	// its markers, so the Application is unmanaged for the former loser.
 	require.NoError(t, k8sClient.Delete(t.Context(), gotWinner))
+	_, err = f.reconciler.Reconcile(t.Context(), ctrl.Request{NamespacedName: client.ObjectKeyFromObject(gotWinner)})
+	require.NoError(t, err)
 	waitForSlugIndex(t, slug, 1)
 	_, got, err = f.reconcile(t, got)
 	require.NoError(t, err)
-	assertReady(t, got, metav1.ConditionTrue, v1alpha1.ReasonReconciled)
-	application, err := f.authentik.GetApplication(t.Context(), slug)
-	require.NoError(t, err)
-	assert.Equal(t, application.Pk, got.Status.ApplicationPK, "the marked Application of the former winner is taken over")
+	assertReady(t, got, metav1.ConditionFalse, v1alpha1.ReasonUnmanaged)
 }
 
 // manualApplication creates an Application with a forward auth Proxy Provider and a Binding for admins in the

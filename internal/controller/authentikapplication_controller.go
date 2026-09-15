@@ -37,6 +37,7 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/builder"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/controller"
+	"sigs.k8s.io/controller-runtime/pkg/event"
 	"sigs.k8s.io/controller-runtime/pkg/handler"
 	"sigs.k8s.io/controller-runtime/pkg/predicate"
 	"sigs.k8s.io/controller-runtime/pkg/reconcile"
@@ -102,7 +103,10 @@ func (r *AuthentikApplicationReconciler) Reconcile(ctx context.Context, req ctrl
 		return ctrl.Result{}, client.IgnoreNotFound(err)
 	}
 	if !app.DeletionTimestamp.IsZero() {
-		return ctrl.Result{}, nil
+		return r.finalize(ctx, app)
+	}
+	if err := r.ensureFinalizer(ctx, app); err != nil {
+		return ctrl.Result{}, err
 	}
 
 	s := &reconcileState{app: app, base: app.DeepCopy()}
@@ -241,8 +245,12 @@ func (r *AuthentikApplicationReconciler) SetupWithManager(mgr ctrl.Manager) erro
 		return fmt.Errorf("failed to index %s: %w", credentialsSecretIndexField, err)
 	}
 	return ctrl.NewControllerManagedBy(mgr).
-		// Status writes do not change the generation, so they do not trigger another reconcile.
-		For(&v1alpha1.AuthentikApplication{}, builder.WithPredicates(predicate.GenerationChangedPredicate{})).
+		// Status writes do not change the generation, so they do not trigger another reconcile. The start of a
+		// deletion always does.
+		For(&v1alpha1.AuthentikApplication{}, builder.WithPredicates(predicate.Or[client.Object](
+			predicate.GenerationChangedPredicate{},
+			predicate.Funcs{UpdateFunc: func(e event.UpdateEvent) bool { return !e.ObjectNew.GetDeletionTimestamp().IsZero() }},
+		))).
 		Watches(&v1alpha1.AuthentikApplication{}, handler.EnqueueRequestsFromMapFunc(r.sameSlugRequests),
 			builder.WithPredicates(conflictPredicate)).
 		Watches(&corev1.Secret{}, handler.EnqueueRequestsFromMapFunc(r.credentialsSecretRequests)).
