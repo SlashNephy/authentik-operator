@@ -852,18 +852,30 @@ func (c *Client) PatchPolicyBinding(_ context.Context, uuid string, request *api
 	if err := checkBindingSubject(operation, request.Policy, request.Group, request.User); err != nil {
 		return nil, err
 	}
+	// The serializer validates only the subject fields in the request, but a partial update keeps the stored
+	// value of every omitted field, so a Binding can end up with more than one subject.
+	policy, group, user := binding.Policy, binding.Group, binding.User
+	if request.Policy.IsSet() {
+		policy = request.Policy
+	}
+	if request.Group.IsSet() {
+		group = request.Group
+	}
+	if request.User.IsSet() {
+		user = request.User
+	}
 	order := binding.Order
 	if request.Order != nil {
 		order = *request.Order
 	}
-	if c.bindingOrderTaken(request.Policy, *request.Target, order, uuid) {
+	if c.bindingOrderTaken(policy, *request.Target, order, uuid) {
 		return nil, badRequest(operation, "non_field_errors", "The fields policy, target, order must make a unique set.")
 	}
 
 	binding.Target = *request.Target
-	binding.Policy = request.Policy
-	binding.Group = request.Group
-	binding.User = request.User
+	binding.Policy = policy
+	binding.Group = group
+	binding.User = user
 	binding.Order = order
 	if request.Negate != nil {
 		binding.Negate = request.Negate

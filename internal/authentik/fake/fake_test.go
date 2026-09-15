@@ -195,11 +195,14 @@ func TestPolicyBindingSubjectAndTarget(t *testing.T) {
 
 	group := *api.NewNullableString(new("group-uuid"))
 	user := *api.NewNullableInt32(new(int32(42)))
+	null := *api.NewNullableString(nil)
 
 	tests := []struct {
 		name       string
 		patch      func(target string) *api.PatchedPolicyBindingRequest
 		wantStatus int
+		wantGroup  api.NullableString
+		wantUser   api.NullableInt32
 	}{
 		{
 			name: "patch without target",
@@ -227,6 +230,24 @@ func TestPolicyBindingSubjectAndTarget(t *testing.T) {
 			patch: func(target string) *api.PatchedPolicyBindingRequest {
 				return &api.PatchedPolicyBindingRequest{Target: new(target), Group: group, Negate: new(true)}
 			},
+			wantGroup: group,
+		},
+		{
+			// Confirmed against authentik 2026.8.2: the omitted group is kept next to the new user.
+			name: "patch with another subject keeps the omitted one",
+			patch: func(target string) *api.PatchedPolicyBindingRequest {
+				return &api.PatchedPolicyBindingRequest{Target: new(target), User: user, Negate: new(true)}
+			},
+			wantGroup: group,
+			wantUser:  user,
+		},
+		{
+			name: "patch with another subject and explicit nulls replaces the subject",
+			patch: func(target string) *api.PatchedPolicyBindingRequest {
+				return &api.PatchedPolicyBindingRequest{Target: new(target), Group: null, User: user, Negate: new(true)}
+			},
+			wantGroup: null,
+			wantUser:  user,
 		},
 	}
 
@@ -245,6 +266,8 @@ func TestPolicyBindingSubjectAndTarget(t *testing.T) {
 			}
 			require.NoError(t, err)
 			assert.True(t, *patched.Negate)
+			assert.Equal(t, tt.wantGroup.Get(), patched.Group.Get())
+			assert.Equal(t, tt.wantUser.Get(), patched.User.Get())
 		})
 	}
 }
