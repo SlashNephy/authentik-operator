@@ -133,7 +133,7 @@ spec:
       logoutURI: ...
       logoutMethod: BackChannel  # BackChannel | FrontChannel
       credentials: { ... }       # §2.5
-  access: { ... }                # §2.4
+  access: { ... }                # Required. §2.4
 ```
 
 - Every reference to an authentik object is written as an object.
@@ -208,6 +208,8 @@ access:
   prune: false         # Whether to delete unmanaged Bindings. §3.5
 ```
 
+- `access` itself is required.
+  Omitting it would leave the Application without Bindings, which is the accidental "public to everyone" state that the table below prevents, so a public Application must say `public: true` explicitly.
 - Each rule specifies exactly one of `group`, `user`, or `policy` (validated by CEL).
 - References follow the common rule in §2.2. Only Users have no UUID, so their identifier is the integer `pk`.
 - authentik's `order` does not affect the result.
