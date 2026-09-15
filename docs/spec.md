@@ -590,7 +590,8 @@ When a new authentik minor is released, the Renovate PR that bumps client-go is 
 
 **CI and release**
 
-The standard Kubebuilder layout is combined with golangci-lint, chart-releaser, and mise.
+The standard Kubebuilder layout is combined with golangci-lint and mise.
+Publishing a GitHub release of a `v*` tag publishes the container image to GHCR and the Helm chart as an asset of that release, indexed by a Helm repository on GitHub Pages; no separate release is created for the chart.
 
 The Helm chart renders the CRDs as templates rather than placing them in the `crds/` directory.
 The `crds/` directory approach is applied only on the first install, and CRDs are not updated on upgrade.

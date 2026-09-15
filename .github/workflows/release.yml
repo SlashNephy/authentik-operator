@@ -1,9 +1,9 @@
 name: Release
 
 on:
-  push:
-    tags:
-      - "v*"
+  release:
+    types:
+      - published
 
 permissions: {}
 
@@ -31,7 +31,7 @@ jobs:
       - name: Check that the tag matches the supported authentik minor version
         id: version
         env:
-          TAG: ${{ github.ref_name }}
+          TAG: ${{ github.event.release.tag_name }}
         run: |
           hack/release/check-version.sh "${TAG}"
           echo "version=${TAG#v}" >> "${GITHUB_OUTPUT}"
@@ -74,7 +74,7 @@ jobs:
             org.opencontainers.image.version=${{ needs.check.outputs.version }}
 
   chart:
-    name: Release the Helm chart
+    name: Publish the Helm chart
     needs: [check, image]
     runs-on: ubuntu-latest
     permissions:
@@ -83,25 +83,43 @@ jobs:
       - name: Clone the code
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
-          fetch-depth: 0
+          persist-credentials: false
 
       - name: Set up tools
         uses: jdx/mise-action@c2a87611a18de5b3828c5652fe268e992400cb5c # v4.3.0
 
-      - name: Configure Git
-        run: |
-          git config user.name "github-actions[bot]"
-          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-
-      - name: Set the chart version
+      - name: Package the chart
         env:
           VERSION: ${{ needs.check.outputs.version }}
-        run: hack/release/set-chart-version.sh "${VERSION}"
+        run: |
+          hack/release/set-chart-version.sh "${VERSION}"
+          helm package charts/chart --destination dist/chart
 
-      - name: Run chart-releaser
-        uses: helm/chart-releaser-action@cae68fefc6b5f367a0275617c9f83181ba54714f # v1.7.0
-        with:
-          charts_dir: charts
-          skip_existing: true
+      - name: Attach the chart to the release
         env:
-          CR_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ github.event.release.tag_name }}
+        run: gh release upload "${TAG}" dist/chart/*.tgz --clobber
+
+      - name: Clone the gh-pages branch
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: gh-pages
+          path: gh-pages
+
+      - name: Update the Helm repository index
+        env:
+          TAG: ${{ github.event.release.tag_name }}
+          VERSION: ${{ needs.check.outputs.version }}
+          REPOSITORY: ${{ github.repository }}
+        run: |
+          helm repo index dist/chart \
+            --url "https://github.com/${REPOSITORY}/releases/download/${TAG}" \
+            --merge gh-pages/index.yaml
+          cp dist/chart/index.yaml gh-pages/index.yaml
+          cd gh-pages
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add index.yaml
+          git commit -m "chore: publish the authentik-operator chart ${VERSION}"
+          git push origin HEAD:gh-pages
