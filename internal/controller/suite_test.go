@@ -17,6 +17,7 @@ limitations under the License.
 package controller
 
 import (
+	"context"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -25,6 +26,7 @@ import (
 	"k8s.io/apimachinery/pkg/runtime"
 	clientgoscheme "k8s.io/client-go/kubernetes/scheme"
 	"k8s.io/client-go/rest"
+	"sigs.k8s.io/controller-runtime/pkg/cache"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/envtest"
 
@@ -37,7 +39,20 @@ var (
 	cfg       *rest.Config
 	k8sClient client.Client
 	scheme    = runtime.NewScheme()
+	// indexedClient reads and writes like k8sClient, but lists from a cache that has the slug index, as the
+	// client of the manager does.
+	indexedClient client.Client
 )
+
+// cacheListClient lists from a cache and performs every other operation with the embedded client.
+type cacheListClient struct {
+	client.Client
+	cache cache.Cache
+}
+
+func (c *cacheListClient) List(ctx context.Context, list client.ObjectList, opts ...client.ListOption) error {
+	return c.cache.List(ctx, list, opts...)
+}
 
 func TestMain(m *testing.M) {
 	os.Exit(run(m))
@@ -76,6 +91,28 @@ func run(m *testing.M) int {
 		fmt.Fprintf(os.Stderr, "failed to create a Kubernetes client: %v\n", err)
 		return 1
 	}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	informers, err := cache.New(cfg, cache.Options{Scheme: scheme})
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "failed to create a cache: %v\n", err)
+		return 1
+	}
+	if err := IndexSlug(ctx, informers); err != nil {
+		fmt.Fprintf(os.Stderr, "failed to index the slug: %v\n", err)
+		return 1
+	}
+	go func() {
+		if err := informers.Start(ctx); err != nil {
+			fmt.Fprintf(os.Stderr, "failed to start the cache: %v\n", err)
+		}
+	}()
+	if _, err := informers.GetInformer(ctx, &v1alpha1.AuthentikApplication{}); err != nil {
+		fmt.Fprintf(os.Stderr, "failed to start the informer: %v\n", err)
+		return 1
+	}
+	indexedClient = &cacheListClient{Client: k8sClient, cache: informers}
 
 	return m.Run()
 }

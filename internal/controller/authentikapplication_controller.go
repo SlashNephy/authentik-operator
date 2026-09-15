@@ -37,6 +37,7 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/builder"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/controller"
+	"sigs.k8s.io/controller-runtime/pkg/handler"
 	"sigs.k8s.io/controller-runtime/pkg/predicate"
 	"sigs.k8s.io/controller-runtime/pkg/reconcile"
 
@@ -109,6 +110,9 @@ func (r *AuthentikApplicationReconciler) Reconcile(ctx context.Context, req ctrl
 }
 
 func (r *AuthentikApplicationReconciler) reconcile(ctx context.Context, s *reconcileState) error {
+	if err := r.checkConflict(ctx, s); err != nil {
+		return err
+	}
 	resolved, err := r.Resolver.Resolve(ctx, s.app)
 	if err != nil {
 		return err
@@ -211,9 +215,14 @@ func specHash(spec *v1alpha1.AuthentikApplicationSpec) string {
 
 // SetupWithManager sets up the controller with the Manager.
 func (r *AuthentikApplicationReconciler) SetupWithManager(mgr ctrl.Manager) error {
+	if err := IndexSlug(context.Background(), mgr.GetFieldIndexer()); err != nil {
+		return fmt.Errorf("failed to index %s: %w", slugIndexField, err)
+	}
 	return ctrl.NewControllerManagedBy(mgr).
 		// Status writes do not change the generation, so they do not trigger another reconcile.
 		For(&v1alpha1.AuthentikApplication{}, builder.WithPredicates(predicate.GenerationChangedPredicate{})).
+		Watches(&v1alpha1.AuthentikApplication{}, handler.EnqueueRequestsFromMapFunc(r.sameSlugRequests),
+			builder.WithPredicates(conflictPredicate)).
 		Named("authentikapplication").
 		WithOptions(controller.Options{
 			// Outpost membership is updated with read-modify-write, so reconciles are serialized (docs/spec.md §3.7).

@@ -32,7 +32,9 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/client-go/tools/events"
 	ctrl "sigs.k8s.io/controller-runtime"
+	"sigs.k8s.io/controller-runtime/pkg/cache"
 	"sigs.k8s.io/controller-runtime/pkg/client"
+	"sigs.k8s.io/controller-runtime/pkg/config"
 	metricsserver "sigs.k8s.io/controller-runtime/pkg/metrics/server"
 
 	"github.com/SlashNephy/authentik-operator/api/v1alpha1"
@@ -43,7 +45,6 @@ import (
 
 const (
 	testRole          = "authentik-operator-test"
-	testSlug          = "wiki"
 	authorizationSlug = "default-provider-authorization-implicit-consent"
 	invalidationSlug  = "default-provider-invalidation-flow"
 	externalHost      = "https://wiki.example.com"
@@ -135,6 +136,8 @@ type fixture struct {
 	reconciler *AuthentikApplicationReconciler
 	recorder   *events.FakeRecorder
 	namespace  string
+	// slug is unique to the fixture, because the slug index is cluster-wide and tests run in parallel.
+	slug string
 
 	admins *api.Group
 	bob    *api.User
@@ -159,7 +162,7 @@ func newFixture(t *testing.T) *fixture {
 	return &fixture{
 		authentik: c,
 		reconciler: &AuthentikApplicationReconciler{
-			Client:         k8sClient,
+			Client:         indexedClient,
 			Scheme:         scheme,
 			Authentik:      c,
 			Marker:         ownership.NewMarker(c, testRole),
@@ -169,6 +172,7 @@ func newFixture(t *testing.T) *fixture {
 		},
 		recorder:  recorder,
 		namespace: namespace.Name,
+		slug:      namespace.Name,
 		admins:    c.AddGroup("admins"),
 		bob:       c.AddUser("bob"),
 	}
@@ -181,9 +185,9 @@ func testProviderFlows() v1alpha1.ProviderFlows {
 	}
 }
 
-func proxySpec() v1alpha1.AuthentikApplicationSpec {
+func (f *fixture) proxySpec() v1alpha1.AuthentikApplicationSpec {
 	return v1alpha1.AuthentikApplicationSpec{
-		Slug:      testSlug,
+		Slug:      f.slug,
 		Name:      testName,
 		LaunchURL: new(externalHost),
 		Provider: &v1alpha1.ProviderSpec{
@@ -261,17 +265,17 @@ func providerObject(model api.ModelEnum, pk *int64) ownership.Object {
 func TestReconcileCreatesProxyApplication(t *testing.T) {
 	t.Parallel()
 	f := newFixture(t)
-	app := f.create(t, proxySpec())
+	app := f.create(t, f.proxySpec())
 
 	result, got, err := f.reconcile(t, app)
 	require.NoError(t, err)
 	assert.Equal(t, resyncInterval, result.RequeueAfter)
 	assertReady(t, got, metav1.ConditionTrue, v1alpha1.ReasonReconciled)
 	assert.Equal(t, specHash(&got.Spec), got.Status.LastAppliedHash)
-	assert.Equal(t, testSlug, got.Status.ApplicationSlug)
+	assert.Equal(t, f.slug, got.Status.ApplicationSlug)
 	require.NotNil(t, got.Status.ProviderPK)
 
-	application, err := f.authentik.GetApplication(t.Context(), testSlug)
+	application, err := f.authentik.GetApplication(t.Context(), f.slug)
 	require.NoError(t, err)
 	assert.Equal(t, got.Status.ApplicationPK, application.Pk)
 	assert.Equal(t, testName, application.Name)
@@ -281,7 +285,7 @@ func TestReconcileCreatesProxyApplication(t *testing.T) {
 
 	provider, err := f.authentik.GetProxyProvider(t.Context(), int32(*got.Status.ProviderPK))
 	require.NoError(t, err)
-	assert.Equal(t, testSlug, provider.Name, "the provider name defaults to the slug")
+	assert.Equal(t, f.slug, provider.Name, "the provider name defaults to the slug")
 	assert.Equal(t, new(api.PROXYMODE_FORWARD_SINGLE), provider.Mode)
 	assert.Equal(t, externalHost, provider.ExternalHost)
 
@@ -310,7 +314,7 @@ func TestReconcileCreatesOAuth2ApplicationWithDefaults(t *testing.T) {
 	t.Parallel()
 	f := newFixture(t)
 	app := f.create(t, v1alpha1.AuthentikApplicationSpec{
-		Slug: oauth2Slug, Name: "Chat",
+		Slug: f.slug, Name: "Chat",
 		Provider: &v1alpha1.ProviderSpec{Flows: testProviderFlows(), OAuth2: &v1alpha1.OAuth2ProviderSpec{ClientType: new(v1alpha1.ClientTypePublic)}},
 		Access:   v1alpha1.AccessSpec{Public: new(true)},
 	})
@@ -322,12 +326,12 @@ func TestReconcileCreatesOAuth2ApplicationWithDefaults(t *testing.T) {
 
 	provider, err := f.authentik.GetOAuth2Provider(t.Context(), int32(*got.Status.ProviderPK))
 	require.NoError(t, err)
-	assert.Equal(t, oauth2Slug, provider.Name)
+	assert.Equal(t, f.slug, provider.Name)
 	assert.Len(t, provider.PropertyMappings, 3, "openid, email, and profile are the default scopes")
 	assert.NotNil(t, provider.SigningKey.Get(), "the self-signed certificate is the default signing key")
 	assert.Equal(t, new(api.CLIENTTYPEENUM_PUBLIC), provider.ClientType)
 
-	application, err := f.authentik.GetApplication(t.Context(), oauth2Slug)
+	application, err := f.authentik.GetApplication(t.Context(), f.slug)
 	require.NoError(t, err)
 	bindings, err := f.authentik.ListPolicyBindings(t.Context(), application.PbmUuid)
 	require.NoError(t, err)
@@ -337,7 +341,7 @@ func TestReconcileCreatesOAuth2ApplicationWithDefaults(t *testing.T) {
 func TestReconcileWithoutChangesWritesNothing(t *testing.T) {
 	t.Parallel()
 	f := newFixture(t)
-	app := f.create(t, proxySpec())
+	app := f.create(t, f.proxySpec())
 
 	_, got, err := f.reconcile(t, app)
 	require.NoError(t, err)
@@ -354,13 +358,13 @@ func TestReconcileWithoutChangesWritesNothing(t *testing.T) {
 func TestReconcileRepairsDrift(t *testing.T) {
 	t.Parallel()
 	f := newFixture(t)
-	app := f.create(t, proxySpec())
+	app := f.create(t, f.proxySpec())
 	_, got, err := f.reconcile(t, app)
 	require.NoError(t, err)
 
 	ctx := t.Context()
 	providerPK := int32(*got.Status.ProviderPK)
-	_, err = f.authentik.PatchApplication(ctx, testSlug, &api.PatchedApplicationRequest{
+	_, err = f.authentik.PatchApplication(ctx, f.slug, &api.PatchedApplicationRequest{
 		Name: new("Changed"), MetaDescription: new("set in the UI"), Provider: *api.NewNullableInt32(nil),
 	})
 	require.NoError(t, err)
@@ -380,7 +384,7 @@ func TestReconcileRepairsDrift(t *testing.T) {
 	require.NoError(t, err)
 	assert.ElementsMatch(t, []string{"PatchApplication", "PatchProxyProvider", "PatchPolicyBinding"}, f.authentik.takeWrites())
 
-	application, err := f.authentik.GetApplication(ctx, testSlug)
+	application, err := f.authentik.GetApplication(ctx, f.slug)
 	require.NoError(t, err)
 	assert.Equal(t, testName, application.Name)
 	assert.Equal(t, new("set in the UI"), application.MetaDescription, "fields omitted from the spec are not managed")
@@ -396,13 +400,13 @@ func TestReconcileRepairsDrift(t *testing.T) {
 func TestReconcileRecreatesDeletedObjects(t *testing.T) {
 	t.Parallel()
 	f := newFixture(t)
-	app := f.create(t, proxySpec())
+	app := f.create(t, f.proxySpec())
 	_, got, err := f.reconcile(t, app)
 	require.NoError(t, err)
 	f.events()
 
 	ctx := t.Context()
-	require.NoError(t, f.authentik.DeleteApplication(ctx, testSlug))
+	require.NoError(t, f.authentik.DeleteApplication(ctx, f.slug))
 	require.NoError(t, f.authentik.DeleteProxyProvider(ctx, int32(*got.Status.ProviderPK)))
 
 	_, recreated, err := f.reconcile(t, got)
@@ -413,7 +417,7 @@ func TestReconcileRecreatesDeletedObjects(t *testing.T) {
 	assert.Len(t, recreated.Status.BindingUUIDs, 2)
 	assert.ElementsMatch(t, []string{"Warning Recreated", "Warning Recreated", normalCreated, normalCreated}, eventReasons(f.events()))
 
-	application, err := f.authentik.GetApplication(ctx, testSlug)
+	application, err := f.authentik.GetApplication(ctx, f.slug)
 	require.NoError(t, err)
 	assert.Equal(t, new(int32(*recreated.Status.ProviderPK)), application.Provider.Get())
 }
@@ -425,13 +429,13 @@ func TestReconcileReusesProviderWithoutApplication(t *testing.T) {
 	require.NoError(t, err)
 	// A Provider left behind by a crash before its pk was recorded: it has the default name and no marker.
 	orphan, err := f.authentik.CreateProxyProvider(t.Context(), &api.ProxyProviderRequest{
-		Name: testSlug, AuthorizationFlow: flows[0].Pk, InvalidationFlow: flows[0].Pk,
+		Name: f.slug, AuthorizationFlow: flows[0].Pk, InvalidationFlow: flows[0].Pk,
 		ExternalHost: "https://old.example.com", Mode: new(api.PROXYMODE_FORWARD_SINGLE),
 	})
 	require.NoError(t, err)
 	f.authentik.takeWrites()
 
-	_, got, err := f.reconcile(t, f.create(t, proxySpec()))
+	_, got, err := f.reconcile(t, f.create(t, f.proxySpec()))
 	require.NoError(t, err)
 	assertReady(t, got, metav1.ConditionTrue, v1alpha1.ReasonReconciled)
 	assert.Equal(t, int64(orphan.Pk), *got.Status.ProviderPK)
@@ -456,8 +460,8 @@ func TestReconcileStopsWithoutWriting(t *testing.T) {
 	}{
 		{
 			name: "unresolved reference",
-			setup: func(_ *testing.T, _ *fixture) v1alpha1.AuthentikApplicationSpec {
-				spec := proxySpec()
+			setup: func(_ *testing.T, f *fixture) v1alpha1.AuthentikApplicationSpec {
+				spec := f.proxySpec()
 				spec.Access.Rules = append(spec.Access.Rules, v1alpha1.AccessRule{Group: &v1alpha1.NamedReference{Name: new("missing")}})
 				return spec
 			},
@@ -467,9 +471,9 @@ func TestReconcileStopsWithoutWriting(t *testing.T) {
 		{
 			name: "unmanaged Application with the slug",
 			setup: func(t *testing.T, f *fixture) v1alpha1.AuthentikApplicationSpec {
-				_, err := f.authentik.CreateApplication(t.Context(), &api.ApplicationRequest{Name: "Manual", Slug: testSlug})
+				_, err := f.authentik.CreateApplication(t.Context(), &api.ApplicationRequest{Name: "Manual", Slug: f.slug})
 				require.NoError(t, err)
-				return proxySpec()
+				return f.proxySpec()
 			},
 			reason:     v1alpha1.ReasonUnmanaged,
 			wantResync: true,
@@ -485,11 +489,11 @@ func TestReconcileStopsWithoutWriting(t *testing.T) {
 				})
 				require.NoError(t, err)
 				application, err := f.authentik.CreateApplication(ctx, &api.ApplicationRequest{
-					Name: testName, Slug: testSlug, Provider: *api.NewNullableInt32(&provider.Pk),
+					Name: testName, Slug: f.slug, Provider: *api.NewNullableInt32(&provider.Pk),
 				})
 				require.NoError(t, err)
 				require.NoError(t, ownership.NewMarker(f.authentik.Client, testRole).Mark(ctx, applicationObject(application)))
-				return proxySpec()
+				return f.proxySpec()
 			},
 			reason:     v1alpha1.ReasonProviderTypeMismatch,
 			wantResync: true,
@@ -521,12 +525,12 @@ func TestReconcileStopsWithoutWriting(t *testing.T) {
 func TestReconcileUpdatesBindingsWhenRulesChange(t *testing.T) {
 	t.Parallel()
 	f := newFixture(t)
-	app := f.create(t, proxySpec())
+	app := f.create(t, f.proxySpec())
 	_, got, err := f.reconcile(t, app)
 	require.NoError(t, err)
 
 	ctx := t.Context()
-	application, err := f.authentik.GetApplication(ctx, testSlug)
+	application, err := f.authentik.GetApplication(ctx, f.slug)
 	require.NoError(t, err)
 	unmanaged, err := f.authentik.CreatePolicyBinding(ctx, &api.PolicyBindingRequest{
 		Target: application.PbmUuid, Group: *api.NewNullableString(new(f.authentik.AddGroup("legacy").Pk)), Order: 100,
@@ -561,7 +565,7 @@ func TestReconcileUpdatesBindingsWhenRulesChange(t *testing.T) {
 func TestReconcileReattachesMarkersAfterRoleRecreation(t *testing.T) {
 	t.Parallel()
 	f := newFixture(t)
-	app := f.create(t, proxySpec())
+	app := f.create(t, f.proxySpec())
 	_, got, err := f.reconcile(t, app)
 	require.NoError(t, err)
 	before := f.managed(t)
@@ -584,7 +588,11 @@ func TestManagerReconcilesResources(t *testing.T) {
 	f := newFixture(t)
 
 	mgr, err := ctrl.NewManager(cfg, ctrl.Options{
-		Scheme:                 scheme,
+		Scheme: scheme,
+		// go test -count runs this test again in the same process, which registers the controller name again.
+		Controller: config.Controller{SkipNameValidation: new(true)},
+		// Other tests reconcile the resources in their own namespaces with their own fakes.
+		Cache:                  cache.Options{DefaultNamespaces: map[string]cache.Config{f.namespace: {}}},
 		Metrics:                metricsserver.Options{BindAddress: "0"},
 		HealthProbeBindAddress: "0",
 	})
@@ -600,7 +608,7 @@ func TestManagerReconcilesResources(t *testing.T) {
 		assert.NoError(t, mgr.Start(ctx))
 	}()
 
-	app := f.create(t, proxySpec())
+	app := f.create(t, f.proxySpec())
 	assert.EventuallyWithT(t, func(c *assert.CollectT) {
 		got := &v1alpha1.AuthentikApplication{}
 		require.NoError(c, k8sClient.Get(ctx, client.ObjectKeyFromObject(app), got))
@@ -608,4 +616,105 @@ func TestManagerReconcilesResources(t *testing.T) {
 		require.NotNil(c, condition)
 		assert.Equal(c, metav1.ConditionTrue, condition.Status)
 	}, 30*time.Second, 100*time.Millisecond)
+}
+
+func TestConflictWinner(t *testing.T) {
+	t.Parallel()
+
+	const secondWiki = "b/wiki"
+	older := metav1.NewTime(time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC))
+	newer := metav1.NewTime(older.Add(time.Hour))
+	app := func(namespace, name string, created metav1.Time, applicationPK string) v1alpha1.AuthentikApplication {
+		return v1alpha1.AuthentikApplication{
+			Namespace: namespace, Name: name, CreationTimestamp: created,
+			Status: v1alpha1.AuthentikApplicationStatus{ApplicationPK: applicationPK},
+		}
+	}
+
+	tests := []struct {
+		name       string
+		candidates []v1alpha1.AuthentikApplication
+		want       string
+	}{
+		{
+			name:       "single resource",
+			candidates: []v1alpha1.AuthentikApplication{app("a", "wiki", newer, "")},
+			want:       "a/wiki",
+		},
+		{
+			name:       "oldest resource when none has recorded a pk",
+			candidates: []v1alpha1.AuthentikApplication{app("a", "wiki", newer, ""), app("b", "wiki", older, "")},
+			want:       secondWiki,
+		},
+		{
+			name:       "resource with a recorded pk wins over an older one",
+			candidates: []v1alpha1.AuthentikApplication{app("a", "wiki", older, ""), app("b", "wiki", newer, "pk")},
+			want:       secondWiki,
+		},
+		{
+			name:       "oldest resource among those with a recorded pk",
+			candidates: []v1alpha1.AuthentikApplication{app("a", "wiki", newer, "pk"), app("b", "wiki", older, "pk"), app("c", "wiki", older, "")},
+			want:       secondWiki,
+		},
+		{
+			name:       "namespace and name break a tie",
+			candidates: []v1alpha1.AuthentikApplication{app("b", "wiki", older, ""), app("a", "z", older, ""), app("a", "y", older, "")},
+			want:       "a/y",
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			winner := conflictWinner(tt.candidates)
+			assert.Equal(t, tt.want, winner.Namespace+"/"+winner.Name)
+		})
+	}
+}
+
+// waitForSlugIndex waits until the cached slug index lists count resources with the slug.
+func waitForSlugIndex(t *testing.T, slug string, count int) {
+	t.Helper()
+	assert.EventuallyWithT(t, func(c *assert.CollectT) {
+		var list v1alpha1.AuthentikApplicationList
+		require.NoError(c, indexedClient.List(t.Context(), &list, client.MatchingFields{slugIndexField: slug}))
+		assert.Len(c, list.Items, count)
+	}, 10*time.Second, 50*time.Millisecond)
+}
+
+func TestReconcileConflict(t *testing.T) {
+	t.Parallel()
+	f := newFixture(t)
+	slug := f.slug
+
+	first := f.proxySpec()
+	winner := &v1alpha1.AuthentikApplication{Namespace: f.namespace, Name: "a-first", Spec: first}
+	require.NoError(t, k8sClient.Create(t.Context(), winner))
+	loser := &v1alpha1.AuthentikApplication{Namespace: f.namespace, Name: "b-second", Spec: first}
+	require.NoError(t, k8sClient.Create(t.Context(), loser))
+	waitForSlugIndex(t, slug, 2)
+
+	result, got, err := f.reconcile(t, loser)
+	require.NoError(t, err)
+	assert.Equal(t, resyncInterval, result.RequeueAfter)
+	assertReady(t, got, metav1.ConditionFalse, v1alpha1.ReasonConflict)
+	assert.Contains(t, meta.FindStatusCondition(got.Status.Conditions, v1alpha1.ConditionTypeReady).Message, f.namespace+"/a-first")
+	assert.Empty(t, f.authentik.takeWrites(), "a loser writes nothing to authentik")
+
+	_, gotWinner, err := f.reconcile(t, winner)
+	require.NoError(t, err)
+	assertReady(t, gotWinner, metav1.ConditionTrue, v1alpha1.ReasonReconciled)
+
+	// The loser stays a loser even after the winner has recorded a pk, and takes over once the winner is gone.
+	_, got, err = f.reconcile(t, got)
+	require.NoError(t, err)
+	assertReady(t, got, metav1.ConditionFalse, v1alpha1.ReasonConflict)
+
+	require.NoError(t, k8sClient.Delete(t.Context(), gotWinner))
+	waitForSlugIndex(t, slug, 1)
+	_, got, err = f.reconcile(t, got)
+	require.NoError(t, err)
+	assertReady(t, got, metav1.ConditionTrue, v1alpha1.ReasonReconciled)
+	application, err := f.authentik.GetApplication(t.Context(), slug)
+	require.NoError(t, err)
+	assert.Equal(t, application.Pk, got.Status.ApplicationPK, "the marked Application of the former winner is taken over")
 }
