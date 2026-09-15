@@ -169,10 +169,16 @@ func (r *AuthentikApplicationReconciler) finish(ctx context.Context, s *reconcil
 
 // setReady sets the Ready condition and records an Event when its status or reason changes.
 func (r *AuthentikApplicationReconciler) setReady(s *reconcileState, status metav1.ConditionStatus, reason, message string) {
-	previous := meta.FindStatusCondition(s.app.Status.Conditions, v1alpha1.ConditionTypeReady)
+	r.setCondition(s, v1alpha1.ConditionTypeReady, status, reason, message)
+}
+
+// setCondition sets a condition and records an Event when its status or reason changes. The Event is a Warning
+// unless the condition is Ready=True.
+func (r *AuthentikApplicationReconciler) setCondition(s *reconcileState, conditionType string, status metav1.ConditionStatus, reason, message string) {
+	previous := meta.FindStatusCondition(s.app.Status.Conditions, conditionType)
 	changed := previous == nil || previous.Status != status || previous.Reason != reason
 	meta.SetStatusCondition(&s.app.Status.Conditions, metav1.Condition{
-		Type:               v1alpha1.ConditionTypeReady,
+		Type:               conditionType,
 		Status:             status,
 		Reason:             reason,
 		Message:            message,
@@ -181,9 +187,9 @@ func (r *AuthentikApplicationReconciler) setReady(s *reconcileState, status meta
 	if !changed {
 		return
 	}
-	eventType := corev1.EventTypeNormal
-	if status != metav1.ConditionTrue {
-		eventType = corev1.EventTypeWarning
+	eventType := corev1.EventTypeWarning
+	if conditionType == v1alpha1.ConditionTypeReady && status == metav1.ConditionTrue {
+		eventType = corev1.EventTypeNormal
 	}
 	r.Recorder.Eventf(s.app, nil, eventType, reason, eventActionReconcile, "%s", message)
 }

@@ -52,6 +52,10 @@ const (
 	testName          = "Wiki"
 	oauth2Slug        = "chat"
 	normalCreated     = "Normal Created"
+
+	opCreatePolicyBinding    = "CreatePolicyBinding"
+	opAssignObjectPermission = "AssignObjectPermission"
+	opDeletePolicyBinding    = "DeletePolicyBinding"
 )
 
 // defaultScopes are the scopes of an OAuth2 Provider created without scopes.
@@ -111,7 +115,7 @@ func (c *recordingClient) PatchOAuth2Provider(ctx context.Context, pk int32, req
 }
 
 func (c *recordingClient) CreatePolicyBinding(ctx context.Context, request *api.PolicyBindingRequest) (*api.PolicyBinding, error) {
-	c.record("CreatePolicyBinding")
+	c.record(opCreatePolicyBinding)
 	return c.Client.CreatePolicyBinding(ctx, request)
 }
 
@@ -121,12 +125,12 @@ func (c *recordingClient) PatchPolicyBinding(ctx context.Context, uuid string, r
 }
 
 func (c *recordingClient) DeletePolicyBinding(ctx context.Context, uuid string) error {
-	c.record("DeletePolicyBinding")
+	c.record(opDeletePolicyBinding)
 	return c.Client.DeletePolicyBinding(ctx, uuid)
 }
 
 func (c *recordingClient) AssignObjectPermission(ctx context.Context, roleUUID string, model api.ModelEnum, objectPK, permission string) error {
-	c.record("AssignObjectPermission")
+	c.record(opAssignObjectPermission)
 	return c.Client.AssignObjectPermission(ctx, roleUUID, model, objectPK, permission)
 }
 
@@ -547,7 +551,7 @@ func TestReconcileUpdatesBindingsWhenRulesChange(t *testing.T) {
 
 	_, updated, err := f.reconcile(t, got)
 	require.NoError(t, err)
-	assert.Equal(t, []string{"CreatePolicyBinding", "AssignObjectPermission", "DeletePolicyBinding"}, f.authentik.takeWrites(),
+	assert.Equal(t, []string{opCreatePolicyBinding, opAssignObjectPermission, opDeletePolicyBinding}, f.authentik.takeWrites(),
 		"the new Binding is written before the old one is deleted")
 
 	bindings, err := f.authentik.ListPolicyBindings(ctx, application.PbmUuid)
@@ -779,7 +783,7 @@ func TestReconcileAdoptsMatchingApplication(t *testing.T) {
 			assert.NotContains(t, writes, "CreateProxyProvider")
 			assert.NotContains(t, writes, "PatchApplication")
 			assert.NotContains(t, writes, "PatchProxyProvider")
-			assert.Equal(t, 1, countOf(writes, "CreatePolicyBinding"), "only the Binding for bob is created; the one for admins is adopted")
+			assert.Equal(t, 1, countOf(writes, opCreatePolicyBinding), "only the Binding for bob is created; the one for admins is adopted")
 
 			bindings, err := f.authentik.ListPolicyBindings(ctx, application.PbmUuid)
 			require.NoError(t, err)
@@ -883,4 +887,122 @@ func TestFieldDiffsRedactsConfidentialValues(t *testing.T) {
 		{Field: "provider.oauth2.credentials.clientID", Desired: "new-id", Actual: "old-id"},
 		{Field: "provider.oauth2.credentials.secretRef.clientSecretKey", Desired: redacted, Actual: redacted},
 	}, fieldDiffs(oauth2FieldPathsFor(), patch, observed))
+}
+
+// legacyBinding creates an unmanaged Binding for the group legacy on the Application of the fixture.
+func (f *fixture) legacyBinding(t *testing.T) *api.PolicyBinding {
+	t.Helper()
+	application, err := f.authentik.GetApplication(t.Context(), f.slug)
+	require.NoError(t, err)
+	binding, err := f.authentik.CreatePolicyBinding(t.Context(), &api.PolicyBindingRequest{
+		Target: application.PbmUuid, Group: *api.NewNullableString(new(f.authentik.AddGroup("legacy").Pk)), Order: 100,
+	})
+	require.NoError(t, err)
+	f.authentik.takeWrites()
+	f.events()
+	return binding
+}
+
+func TestReconcileUnmanagedBindings(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name   string
+		public bool
+		prune  bool
+		// wantReason is the reason of the Ready condition.
+		wantReason        string
+		wantCondition     bool
+		wantKept          bool
+		wantEventReasons  []string
+		wantWritesInOrder []string
+	}{
+		{
+			name:             "reported when prune is false",
+			wantReason:       v1alpha1.ReasonReconciled,
+			wantCondition:    true,
+			wantKept:         true,
+			wantEventReasons: []string{"Warning UnmanagedBindings"},
+		},
+		{
+			name:              "deleted when prune is true",
+			prune:             true,
+			wantReason:        v1alpha1.ReasonReconciled,
+			wantWritesInOrder: []string{opDeletePolicyBinding},
+		},
+		{
+			name:             "public Application with unmanaged Bindings is not ready",
+			public:           true,
+			wantReason:       v1alpha1.ReasonUnmanagedBindings,
+			wantKept:         true,
+			wantEventReasons: []string{"Warning UnmanagedBindings"},
+		},
+		{
+			name:              "public Application with prune loses every unmanaged Binding",
+			public:            true,
+			prune:             true,
+			wantReason:        v1alpha1.ReasonReconciled,
+			wantWritesInOrder: []string{opDeletePolicyBinding},
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			f := newFixture(t)
+			spec := f.proxySpec()
+			if tt.public {
+				spec.Access.Rules = nil
+				spec.Access.Public = new(true)
+			}
+			_, got, err := f.reconcile(t, f.create(t, spec))
+			require.NoError(t, err)
+			legacy := f.legacyBinding(t)
+
+			got.Spec.Access.Prune = new(tt.prune)
+			require.NoError(t, k8sClient.Update(t.Context(), got))
+			_, got, err = f.reconcile(t, got)
+			require.NoError(t, err)
+
+			condition := meta.FindStatusCondition(got.Status.Conditions, v1alpha1.ConditionTypeReady)
+			require.NotNil(t, condition)
+			assert.Equal(t, tt.wantReason, condition.Reason, condition.Message)
+
+			unmanaged := meta.FindStatusCondition(got.Status.Conditions, v1alpha1.ConditionTypeUnmanagedBindings)
+			if tt.wantCondition {
+				require.NotNil(t, unmanaged)
+				assert.Equal(t, metav1.ConditionTrue, unmanaged.Status)
+				assert.Equal(t, "1 binding (group=legacy)", unmanaged.Message)
+			} else {
+				assert.Nil(t, unmanaged)
+			}
+
+			_, err = f.authentik.GetPolicyBinding(t.Context(), legacy.Pk)
+			if tt.wantKept {
+				require.NoError(t, err)
+				assert.Equal(t, []v1alpha1.UnmanagedBinding{{UUID: legacy.Pk, Target: "group/legacy"}}, got.Status.UnmanagedBindings)
+			} else {
+				require.Error(t, err)
+				assert.Empty(t, got.Status.UnmanagedBindings)
+			}
+			assert.ElementsMatch(t, tt.wantWritesInOrder, f.authentik.takeWrites())
+			assert.ElementsMatch(t, tt.wantEventReasons, eventReasons(f.events()))
+		})
+	}
+}
+
+func TestReconcilePruneDeletesAfterWritingManagedBindings(t *testing.T) {
+	t.Parallel()
+	f := newFixture(t)
+	_, got, err := f.reconcile(t, f.create(t, f.proxySpec()))
+	require.NoError(t, err)
+	f.legacyBinding(t)
+
+	f.authentik.AddGroup("developers")
+	got.Spec.Access.Prune = new(true)
+	got.Spec.Access.Rules = append(got.Spec.Access.Rules, v1alpha1.AccessRule{Group: &v1alpha1.NamedReference{Name: new("developers")}})
+	require.NoError(t, k8sClient.Update(t.Context(), got))
+
+	_, _, err = f.reconcile(t, got)
+	require.NoError(t, err)
+	assert.Equal(t, []string{opCreatePolicyBinding, opAssignObjectPermission, opDeletePolicyBinding}, f.authentik.takeWrites())
 }

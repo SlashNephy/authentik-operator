@@ -19,14 +19,27 @@ package controller
 import (
 	"context"
 	"errors"
+	"fmt"
 	"slices"
+	"strconv"
+	"strings"
 
 	api "goauthentik.io/api/v3"
+	"k8s.io/apimachinery/pkg/api/meta"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	logf "sigs.k8s.io/controller-runtime/pkg/log"
 
+	"github.com/SlashNephy/authentik-operator/api/v1alpha1"
 	"github.com/SlashNephy/authentik-operator/internal/authentik"
 	"github.com/SlashNephy/authentik-operator/internal/ownership"
 	"github.com/SlashNephy/authentik-operator/internal/reference"
+)
+
+// Kinds of Binding subjects used in status.unmanagedBindings.
+const (
+	subjectKindGroup  = "group"
+	subjectKindUser   = "user"
+	subjectKindPolicy = "policy"
 )
 
 // orderStep is the gap between the order of a new Binding and the largest existing order (docs/spec.md §2.4).
@@ -102,9 +115,106 @@ func (r *AuthentikApplicationReconciler) reconcileBindings(ctx context.Context, 
 			return err
 		}
 	}
-
 	s.app.Status.BindingUUIDs = kept
-	return r.patchStatus(ctx, s)
+	if err := r.patchStatus(ctx, s); err != nil {
+		return err
+	}
+
+	remaining := slices.DeleteFunc(unmanaged, func(binding *api.PolicyBinding) bool { return slices.Contains(kept, binding.Pk) })
+	return r.handleUnmanagedBindings(ctx, s, remaining)
+}
+
+// handleUnmanagedBindings deletes the unmanaged Bindings when prune is true, and otherwise reports them
+// (docs/spec.md §3.5). It runs after every managed Binding has been written.
+func (r *AuthentikApplicationReconciler) handleUnmanagedBindings(ctx context.Context, s *reconcileState, unmanaged []*api.PolicyBinding) error {
+	access := &s.app.Spec.Access
+	if access.Prune != nil && *access.Prune {
+		for _, binding := range unmanaged {
+			if err := r.Authentik.DeletePolicyBinding(ctx, binding.Pk); err != nil && !errors.Is(err, authentik.ErrNotFound) {
+				return err
+			}
+			logf.FromContext(ctx).Info("Deleted unmanaged PolicyBinding", "uuid", binding.Pk)
+		}
+		unmanaged = nil
+	}
+
+	reported := make([]v1alpha1.UnmanagedBinding, 0, len(unmanaged))
+	for _, binding := range unmanaged {
+		target, err := r.describeSubject(ctx, binding)
+		if err != nil {
+			return err
+		}
+		reported = append(reported, v1alpha1.UnmanagedBinding{UUID: binding.Pk, Target: target})
+	}
+	s.app.Status.UnmanagedBindings = nil
+	if len(reported) > 0 {
+		s.app.Status.UnmanagedBindings = reported
+	}
+
+	public := access.Public != nil && *access.Public
+	message := unmanagedBindingsMessage(reported)
+	switch {
+	case len(reported) == 0:
+		meta.RemoveStatusCondition(&s.app.Status.Conditions, v1alpha1.ConditionTypeUnmanagedBindings)
+	case public:
+		// The Application cannot become public while Bindings remain, so this is not only a warning.
+		meta.RemoveStatusCondition(&s.app.Status.Conditions, v1alpha1.ConditionTypeUnmanagedBindings)
+		return &stopError{
+			reason:  v1alpha1.ReasonUnmanagedBindings,
+			message: message + " keep the Application from being public; set access.prune or delete them",
+		}
+	default:
+		r.setCondition(s, v1alpha1.ConditionTypeUnmanagedBindings, metav1.ConditionTrue, v1alpha1.ReasonUnmanagedBindings, message)
+	}
+	return nil
+}
+
+// unmanagedBindingsMessage summarizes unmanaged Bindings, such as "1 binding (group=legacy)".
+func unmanagedBindingsMessage(bindings []v1alpha1.UnmanagedBinding) string {
+	targets := make([]string, 0, len(bindings))
+	for _, binding := range bindings {
+		targets = append(targets, strings.Replace(binding.Target, "/", "=", 1))
+	}
+	noun := "bindings"
+	if len(bindings) == 1 {
+		noun = "binding"
+	}
+	return fmt.Sprintf("%d %s (%s)", len(bindings), noun, strings.Join(targets, ", "))
+}
+
+// describeSubject describes the subject of a Binding, such as group/legacy. A subject that no longer exists is
+// described by its identifier.
+func (r *AuthentikApplicationReconciler) describeSubject(ctx context.Context, binding *api.PolicyBinding) (string, error) {
+	subject := observedSubject(binding)
+	var kind, name, id string
+	var err error
+	switch {
+	case subject.group != "":
+		kind, id = subjectKindGroup, subject.group
+		var group *api.Group
+		if group, err = r.Authentik.GetGroup(ctx, subject.group); err == nil {
+			name = group.Name
+		}
+	case subject.policy != "":
+		kind, id = subjectKindPolicy, subject.policy
+		var policy *api.Policy
+		if policy, err = r.Authentik.GetPolicy(ctx, subject.policy); err == nil {
+			name = policy.Name
+		}
+	default:
+		kind, id = subjectKindUser, strconv.Itoa(int(subject.user))
+		var user *api.User
+		if user, err = r.Authentik.GetUser(ctx, subject.user); err == nil {
+			name = user.Username
+		}
+	}
+	if errors.Is(err, authentik.ErrNotFound) {
+		return kind + "/" + id, nil
+	}
+	if err != nil {
+		return "", err
+	}
+	return kind + "/" + name, nil
 }
 
 // managedBindings splits the Bindings into those that the operator manages, marked again when needed, and the
