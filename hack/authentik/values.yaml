@@ -1,0 +1,18 @@
+# Values for running authentik on kind for verification and e2e tests.
+# Credentials are injected from the authentik-bootstrap Secret created by up.sh.
+global:
+  envFrom:
+    - secretRef:
+        name: authentik-bootstrap
+
+authentik:
+  error_reporting:
+    enabled: false
+
+postgresql:
+  enabled: true
+  auth:
+    existingSecret: authentik-bootstrap
+    secretKeys:
+      userPasswordKey: AUTHENTIK_POSTGRESQL__PASSWORD
+      adminPasswordKey: AUTHENTIK_POSTGRESQL__PASSWORD
