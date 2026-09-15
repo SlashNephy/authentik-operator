@@ -128,6 +128,11 @@ func (r *AuthentikApplicationReconciler) reconcile(ctx context.Context, s *recon
 		if providerPK, err = r.reconcileProvider(ctx, s, observed); err != nil {
 			return err
 		}
+		if s.app.Spec.Provider.Proxy != nil {
+			if err := r.reconcileOutpost(ctx, s, *providerPK); err != nil {
+				return err
+			}
+		}
 	}
 	application, err := r.reconcileApplication(ctx, s, observed, providerPK)
 	if err != nil {

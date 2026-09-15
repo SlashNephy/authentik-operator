@@ -1006,3 +1006,73 @@ func TestReconcilePruneDeletesAfterWritingManagedBindings(t *testing.T) {
 	require.NoError(t, err)
 	assert.Equal(t, []string{opCreatePolicyBinding, opAssignObjectPermission, opDeletePolicyBinding}, f.authentik.takeWrites())
 }
+
+func TestReconcileOutpostMembership(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name string
+		// outpost is spec.provider.proxy.outpost; nil means the embedded outpost.
+		outpost *v1alpha1.NamedReference
+	}{
+		{name: "embedded outpost by default"},
+		{name: "outpost by name", outpost: &v1alpha1.NamedReference{Name: new("dedicated")}},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			f := newFixture(t)
+			ctx := t.Context()
+			dedicated := f.authentik.AddOutpost("dedicated")
+			outposts, err := f.authentik.FindOutpostsByName(ctx, reference.EmbeddedOutpostName)
+			require.NoError(t, err)
+			target, other := outposts[0].Pk, dedicated.Pk
+			if tt.outpost != nil {
+				target, other = other, target
+			}
+
+			spec := f.proxySpec()
+			spec.Provider.Proxy.Outpost = tt.outpost
+			_, got, err := f.reconcile(t, f.create(t, spec))
+			require.NoError(t, err)
+			assertReady(t, got, metav1.ConditionTrue, v1alpha1.ReasonReconciled)
+			pk := int32(*got.Status.ProviderPK)
+
+			outpost, err := f.authentik.GetOutpost(ctx, target)
+			require.NoError(t, err)
+			assert.Equal(t, []int32{pk}, outpost.Providers)
+			unrelated, err := f.authentik.GetOutpost(ctx, other)
+			require.NoError(t, err)
+			assert.Empty(t, unrelated.Providers)
+
+			// Removal in the UI is repaired, and Providers added by others are kept.
+			orphan, err := f.authentik.CreateProxyProvider(ctx, &api.ProxyProviderRequest{
+				Name: "other-" + f.slug, AuthorizationFlow: "a", InvalidationFlow: "i",
+				ExternalHost: "https://other.example.com", Mode: new(api.PROXYMODE_FORWARD_SINGLE),
+			})
+			require.NoError(t, err)
+			_, err = f.authentik.SetOutpostProviders(ctx, target, []int32{orphan.Pk})
+			require.NoError(t, err)
+			_, _, err = f.reconcile(t, got)
+			require.NoError(t, err)
+			outpost, err = f.authentik.GetOutpost(ctx, target)
+			require.NoError(t, err)
+			assert.Equal(t, []int32{orphan.Pk, pk}, outpost.Providers)
+		})
+	}
+}
+
+func TestReconcileWithoutEmbeddedOutpost(t *testing.T) {
+	t.Parallel()
+	f := newFixture(t)
+	f.authentik.takeWrites()
+	// The fixture has an embedded outpost, so a spec that references a missing Outpost stands in for an
+	// environment where the embedded outpost is disabled; both are resolved by name.
+	spec := f.proxySpec()
+	spec.Provider.Proxy.Outpost = &v1alpha1.NamedReference{Name: new("missing")}
+
+	_, got, err := f.reconcile(t, f.create(t, spec))
+	require.Error(t, err)
+	assertReady(t, got, metav1.ConditionFalse, v1alpha1.ReasonReferenceNotFound)
+	assert.Empty(t, f.authentik.takeWrites())
+}
