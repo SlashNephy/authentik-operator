@@ -92,6 +92,10 @@ func main() {
 		"Disable TLS certificate verification when connecting to authentik.")
 	var clusterName, ownerRole string
 	var resyncInterval time.Duration
+	var markerGC bool
+	flag.BoolVar(&markerGC, "marker-gc", true,
+		"Remove ownership markers of objects deleted outside the operator at every resync. "+
+			"Disable it on authentik versions that clean up orphaned object permissions themselves.")
 	flag.DurationVar(&resyncInterval, "resync-interval", 10*time.Minute,
 		"The period of drift detection. Also the upper bound of the retry interval.")
 	flag.StringVar(&clusterName, "cluster-name", "",
@@ -229,6 +233,7 @@ func main() {
 		Resolver:       reference.NewResolver(authentikClient, mgr.GetClient()),
 		Recorder:       mgr.GetEventRecorder("authentik-operator"),
 		ResyncInterval: resyncInterval,
+		MarkerGC:       markerGC,
 	}).SetupWithManager(mgr); err != nil {
 		setupLog.Error(err, "Failed to create controller", "controller", "authentikapplication")
 		os.Exit(1)

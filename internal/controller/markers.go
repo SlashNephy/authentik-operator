@@ -32,6 +32,8 @@ type markerCache struct {
 	marker *ownership.Marker
 	ttl    time.Duration
 	now    func() time.Time
+	// onRoleRecreated is called when the role UUID changes, so that every marker can be attached again.
+	onRoleRecreated func(ctx context.Context)
 
 	mu      sync.Mutex
 	objects map[ownership.Object]struct{}
@@ -56,6 +58,9 @@ func (c *markerCache) refreshLocked(ctx context.Context) error {
 		// Every marker was deleted with the role. Objects recorded in a status are marked again when their
 		// resource is reconciled.
 		logf.FromContext(ctx).Info("Detected a recreated ownership role", "role", c.marker.RoleName(), "previous", previous, "current", current)
+		if c.onRoleRecreated != nil {
+			c.onRoleRecreated(ctx)
+		}
 	}
 	set, err := c.marker.ListManaged(ctx)
 	if err != nil {
@@ -125,4 +130,49 @@ func (c *markerCache) remove(ctx context.Context, object ownership.Object) error
 	}
 	delete(c.objects, object)
 	return nil
+}
+
+// collect reads the marker list again and removes the markers of objects that no longer exist (docs/spec.md §3.9).
+// Each object is checked while holding the lock, so a marker removed by a concurrent deletion is not attached again.
+func (c *markerCache) collect(ctx context.Context) (int, error) {
+	c.mu.Lock()
+	c.objects = nil
+	err := c.refreshLocked(ctx)
+	objects := make([]ownership.Object, 0, len(c.objects))
+	for object := range c.objects {
+		objects = append(objects, object)
+	}
+	c.mu.Unlock()
+	if err != nil {
+		return 0, err
+	}
+
+	removed := 0
+	for _, object := range objects {
+		orphaned, err := c.removeIfOrphaned(ctx, object)
+		if err != nil {
+			return removed, err
+		}
+		if orphaned {
+			removed++
+		}
+	}
+	return removed, nil
+}
+
+func (c *markerCache) removeIfOrphaned(ctx context.Context, object ownership.Object) (bool, error) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if _, ok := c.objects[object]; !ok {
+		return false, nil
+	}
+	exists, err := c.marker.MarkIfExists(ctx, object)
+	if err != nil || exists {
+		return false, err
+	}
+	if err := c.marker.Unmark(ctx, object); err != nil {
+		return false, err
+	}
+	delete(c.objects, object)
+	return true, nil
 }

@@ -374,3 +374,36 @@ func TestMarkerPropagatesAPIErrors(t *testing.T) {
 		})
 	}
 }
+
+func TestMarkIfExists(t *testing.T) {
+	t.Parallel()
+
+	c := fake.New()
+	objects := authentikObjects(t, c)
+	marker := ownership.NewMarker(c, roleName)
+	for _, object := range objects {
+		require.NoError(t, marker.Mark(t.Context(), object))
+	}
+	require.NoError(t, c.DeleteApplication(t.Context(), "wiki"))
+
+	tests := []struct {
+		name   string
+		object ownership.Object
+		want   bool
+	}{
+		{name: "deleted Application", object: objects[0], want: false},
+		{name: "existing Proxy Provider", object: objects[1], want: true},
+		{name: "Binding deleted with its Application", object: objects[3], want: false},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got, err := marker.MarkIfExists(t.Context(), tt.object)
+			require.NoError(t, err)
+			assert.Equal(t, tt.want, got)
+		})
+	}
+
+	set, err := marker.ListManaged(t.Context())
+	require.NoError(t, err)
+	assert.Len(t, set.Objects(), 4, "marking an existing object again adds nothing")
+}

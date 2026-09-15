@@ -22,6 +22,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"net/http"
 	"strings"
 	"sync"
 
@@ -163,6 +164,25 @@ func (m *Marker) Mark(ctx context.Context, object Object) error {
 		return fmt.Errorf("failed to mark %s %s: %w", object.Model, object.PK, err)
 	}
 	return nil
+}
+
+// MarkIfExists attaches the marker to the object when the object exists and reports whether it exists. authentik
+// validates the object when a permission is assigned, so this detects a deleted object without reading it.
+// It is meant for objects that already carry the marker, for which assigning it again changes nothing.
+func (m *Marker) MarkIfExists(ctx context.Context, object Object) (bool, error) {
+	role, err := m.role(ctx)
+	if err != nil {
+		return false, err
+	}
+	err = m.client.AssignObjectPermission(ctx, role, object.Model, object.PK, viewPermission(object.Model))
+	var apiErr *authentik.APIError
+	if errors.As(err, &apiErr) && apiErr.StatusCode == http.StatusBadRequest && strings.Contains(apiErr.Body, "object_pk") {
+		return false, nil
+	}
+	if err != nil {
+		return false, fmt.Errorf("failed to mark %s %s: %w", object.Model, object.PK, err)
+	}
+	return true, nil
 }
 
 // Unmark removes the marker from the object. Unmarking an object that is not marked succeeds.

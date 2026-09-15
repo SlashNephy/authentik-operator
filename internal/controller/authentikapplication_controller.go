@@ -41,6 +41,7 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/handler"
 	"sigs.k8s.io/controller-runtime/pkg/predicate"
 	"sigs.k8s.io/controller-runtime/pkg/reconcile"
+	"sigs.k8s.io/controller-runtime/pkg/source"
 
 	"github.com/SlashNephy/authentik-operator/api/v1alpha1"
 	"github.com/SlashNephy/authentik-operator/internal/authentik"
@@ -66,9 +67,13 @@ type AuthentikApplicationReconciler struct {
 	Recorder  events.EventRecorder
 	// ResyncInterval is the period of drift detection and the upper bound of the retry interval.
 	ResyncInterval time.Duration
+	// MarkerGC enables the removal of markers that point at deleted objects (docs/spec.md §3.9).
+	MarkerGC bool
 
 	markersOnce sync.Once
 	markerList  *markerCache
+	// roleEvents receives the resources to reconcile after the ownership role was recreated.
+	roleEvents chan event.GenericEvent
 }
 
 // +kubebuilder:rbac:groups=authentik.starry.blue,resources=authentikapplications,verbs=get;list;watch;create;update;patch;delete
@@ -224,6 +229,7 @@ func (r *AuthentikApplicationReconciler) patchStatus(ctx context.Context, s *rec
 func (r *AuthentikApplicationReconciler) markers() *markerCache {
 	r.markersOnce.Do(func() {
 		r.markerList = newMarkerCache(r.Marker, r.ResyncInterval)
+		r.markerList.onRoleRecreated = r.requeueAll
 	})
 	return r.markerList
 }
@@ -244,6 +250,12 @@ func (r *AuthentikApplicationReconciler) SetupWithManager(mgr ctrl.Manager) erro
 	if err := IndexCredentialsSecret(context.Background(), mgr.GetFieldIndexer()); err != nil {
 		return fmt.Errorf("failed to index %s: %w", credentialsSecretIndexField, err)
 	}
+	if r.MarkerGC {
+		if err := mgr.Add(&markerCollector{reconciler: r}); err != nil {
+			return fmt.Errorf("failed to add the marker collector: %w", err)
+		}
+	}
+	r.roleEvents = make(chan event.GenericEvent)
 	return ctrl.NewControllerManagedBy(mgr).
 		// Status writes do not change the generation, so they do not trigger another reconcile. The start of a
 		// deletion always does.
@@ -254,6 +266,7 @@ func (r *AuthentikApplicationReconciler) SetupWithManager(mgr ctrl.Manager) erro
 		Watches(&v1alpha1.AuthentikApplication{}, handler.EnqueueRequestsFromMapFunc(r.sameSlugRequests),
 			builder.WithPredicates(conflictPredicate)).
 		Watches(&corev1.Secret{}, handler.EnqueueRequestsFromMapFunc(r.credentialsSecretRequests)).
+		WatchesRawSource(source.Channel(r.roleEvents, &handler.EnqueueRequestForObject{})).
 		Named("authentikapplication").
 		WithOptions(controller.Options{
 			// Outpost membership is updated with read-modify-write, so reconciles are serialized (docs/spec.md §3.7).
