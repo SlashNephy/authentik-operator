@@ -23,6 +23,11 @@ jobs:
       - name: Set up tools
         uses: jdx/mise-action@c2a87611a18de5b3828c5652fe268e992400cb5c # v4.3.0
 
+      - name: Cache Go
+        uses: ./.github/actions/cache-go
+        with:
+          name: lint
+
       - name: Check golangci-lint configuration
         run: make lint-config
 
@@ -52,6 +57,11 @@ jobs:
       - name: Set up tools
         uses: jdx/mise-action@c2a87611a18de5b3828c5652fe268e992400cb5c # v4.3.0
 
+      - name: Cache Go
+        uses: ./.github/actions/cache-go
+        with:
+          name: test
+
       - name: Run tests
         run: make test
 
@@ -68,6 +78,11 @@ jobs:
 
       - name: Set up tools
         uses: jdx/mise-action@c2a87611a18de5b3828c5652fe268e992400cb5c # v4.3.0
+
+      - name: Cache Go
+        uses: ./.github/actions/cache-go
+        with:
+          name: build
 
       - name: Build the manager
         run: make build

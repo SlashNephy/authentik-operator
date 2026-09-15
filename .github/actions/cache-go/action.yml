@@ -1,0 +1,21 @@
+name: Cache Go
+description: Cache the Go module cache, the Go build cache, and the golangci-lint cache.
+
+inputs:
+  name:
+    description: Cache name that separates jobs building different packages, such as lint or test.
+    required: true
+
+runs:
+  using: composite
+  steps:
+    - name: Cache Go
+      uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+      with:
+        path: |
+          ~/go/pkg/mod
+          ~/.cache/go-build
+          ~/.cache/golangci-lint
+        key: go-${{ runner.os }}-${{ inputs.name }}-${{ hashFiles('go.sum', 'mise.toml') }}
+        restore-keys: |
+          go-${{ runner.os }}-${{ inputs.name }}-
