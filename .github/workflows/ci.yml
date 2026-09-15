@@ -63,6 +63,9 @@ jobs:
           name: test
 
       - name: Run tests
+        # The restored build cache also holds test results; always run the tests instead of reporting cached passes.
+        env:
+          GOFLAGS: -count=1
         run: make test
 
   build:
