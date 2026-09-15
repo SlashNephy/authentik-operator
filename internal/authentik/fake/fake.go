@@ -193,6 +193,15 @@ func (c *Client) AddScopeMapping(name, scopeName string) *api.ScopeMapping {
 	return copyOf(mapping)
 }
 
+// AddManagedScopeMapping stores a ScopeMapping with a managed identifier, like the mappings that authentik ships.
+func (c *Client) AddManagedScopeMapping(name, scopeName, managed string) *api.ScopeMapping {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	mapping := &api.ScopeMapping{Pk: c.nextUUID(), Name: name, ScopeName: scopeName, Managed: *api.NewNullableString(&managed)}
+	c.scopeMappings[mapping.Pk] = mapping
+	return copyOf(mapping)
+}
+
 // AddOutpost stores an Outpost without Providers.
 func (c *Client) AddOutpost(name string) *api.Outpost {
 	c.mu.Lock()
