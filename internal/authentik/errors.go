@@ -106,12 +106,14 @@ func redactBody(body []byte) string {
 	return string(out)
 }
 
-// redactValue replaces the values of the confidential fields in place.
+// redactValue replaces the values of the confidential fields in place. Only string values are replaced: an
+// echoed request payload carries the value itself, while the validation errors of a 400 response are a list of
+// messages about the field, which is what the user needs to read.
 func redactValue(value any) {
 	switch typed := value.(type) {
 	case map[string]any:
 		for key, child := range typed {
-			if slices.Contains(ConfidentialFields, key) {
+			if _, isString := child.(string); isString && slices.Contains(ConfidentialFields, key) {
 				typed[key] = Redacted
 				continue
 			}

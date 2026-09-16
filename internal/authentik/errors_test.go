@@ -55,6 +55,12 @@ func TestErrorBodyRedactsConfidentialValues(t *testing.T) {
 			isJSON: true,
 		},
 		{
+			name:   "the validation errors of a field are kept",
+			body:   `{"client_secret":["This field may not be blank."]}`,
+			want:   `{"client_secret":["This field may not be blank."]}`,
+			isJSON: true,
+		},
+		{
 			name: "a body that is not JSON is kept",
 			body: "<html>502 Bad Gateway</html>",
 			want: "<html>502 Bad Gateway</html>",
