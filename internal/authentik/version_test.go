@@ -21,7 +21,6 @@ import (
 	"errors"
 	"testing"
 
-	"github.com/go-logr/logr"
 	"github.com/prometheus/client_golang/prometheus/testutil"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -137,7 +136,7 @@ func TestCheckVersion(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			match, err := CheckVersion(t.Context(), tt.client, tt.supported, logr.Discard())
+			match, err := CheckVersion(t.Context(), tt.client, tt.supported)
 			if tt.wantErr {
 				require.Error(t, err)
 				return

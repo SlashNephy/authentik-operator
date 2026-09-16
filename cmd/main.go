@@ -32,6 +32,7 @@ import (
 	clientgoscheme "k8s.io/client-go/kubernetes/scheme"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/healthz"
+	logf "sigs.k8s.io/controller-runtime/pkg/log"
 	"sigs.k8s.io/controller-runtime/pkg/log/zap"
 	"sigs.k8s.io/controller-runtime/pkg/metrics/filters"
 	metricsserver "sigs.k8s.io/controller-runtime/pkg/metrics/server"
@@ -270,7 +271,9 @@ func checkAuthentikVersion(client authentik.VersionClient) {
 
 	ctx, cancel := context.WithTimeout(context.Background(), versionCheckTimeout)
 	defer cancel()
-	if _, err := authentik.CheckVersion(ctx, client, supported, setupLog); err != nil {
+	// CheckVersion logs through the context, so carry setupLog into it to keep the "setup" name.
+	ctx = logf.IntoContext(ctx, setupLog)
+	if _, err := authentik.CheckVersion(ctx, client, supported); err != nil {
 		setupLog.Error(err, "Failed to check the authentik version")
 	}
 }
