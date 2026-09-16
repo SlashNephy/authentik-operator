@@ -62,16 +62,26 @@ jobs:
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
 
+      - name: Collect the image metadata
+        id: metadata
+        uses: docker/metadata-action@dc802804100637a589fabce1cb79ff13a1411302 # v6.2.0
+        with:
+          images: ghcr.io/slashnephy/authentik-operator
+          tags: |
+            type=raw,value=${{ needs.check.outputs.version }}
+            # This workflow only runs on a published release, and the tag scheme has no prerelease form,
+            # so every build this produces is the latest one. {{is_default_branch}} is always false on a tag ref.
+            type=raw,value=latest
+            type=sha,prefix=
+
       - name: Build and push
         uses: docker/build-push-action@c3c9e263c25d99ce0380d002d59b67737d91b0dc # v7.4.0
         with:
           context: .
           platforms: linux/amd64,linux/arm64
           push: true
-          tags: ghcr.io/slashnephy/authentik-operator:${{ needs.check.outputs.version }}
-          labels: |
-            org.opencontainers.image.source=https://github.com/${{ github.repository }}
-            org.opencontainers.image.version=${{ needs.check.outputs.version }}
+          tags: ${{ steps.metadata.outputs.tags }}
+          labels: ${{ steps.metadata.outputs.labels }}
 
   chart:
     name: Publish the Helm chart
