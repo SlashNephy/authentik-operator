@@ -34,6 +34,8 @@ spec:
         name: metrics-server-cert
         key: tls.key
       {{- else }}
+      # The manager generates a self-signed certificate for the metrics endpoint, which Prometheus cannot
+      # verify. Enable certManager to scrape the metrics with a verified certificate.
       insecureSkipVerify: true
       {{- end }}
     {{- end }}

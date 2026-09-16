@@ -73,9 +73,10 @@ func main() {
 	flag.StringVar(&metricsAddr, "metrics-bind-address", "0", "The address the metrics endpoint binds to. "+
 		"Use :8443 for HTTPS or :8080 for HTTP, or leave as 0 to disable the metrics service.")
 	flag.StringVar(&probeAddr, "health-probe-bind-address", ":8081", "The address the probe endpoint binds to.")
-	flag.BoolVar(&enableLeaderElection, "leader-elect", false,
+	flag.BoolVar(&enableLeaderElection, "leader-elect", true,
 		"Enable leader election for controller manager. "+
-			"Enabling this will ensure there is only one active controller manager.")
+			"Enabling this ensures there is only one active controller manager. "+
+			"Disable it when running the manager outside a cluster.")
 	flag.BoolVar(&secureMetrics, "metrics-secure", true,
 		"If set, the metrics endpoint is served securely via HTTPS. Use --metrics-secure=false to use HTTP instead.")
 	flag.StringVar(&webhookCertPath, "webhook-cert-path", "", "The directory that contains the webhook certificate.")
@@ -105,9 +106,9 @@ func main() {
 		"The cluster identifier used in the name of the ownership role, authentik-operator-<cluster-name>.")
 	flag.StringVar(&ownerRole, "owner-role", "",
 		"The name of the ownership role. Takes precedence over --cluster-name.")
-	opts := zap.Options{
-		Development: true,
-	}
+	// Production encoding, so that the logs are structured JSON that a log collector can parse.
+	// Pass --zap-devel to get the human readable console output while developing.
+	opts := zap.Options{}
 	opts.BindFlags(flag.CommandLine)
 	flag.Parse()
 

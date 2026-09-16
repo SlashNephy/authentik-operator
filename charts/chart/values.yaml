@@ -213,6 +213,9 @@ certManager:
 
 ## Prometheus ServiceMonitor for metrics scraping.
 ## Requires prometheus-operator to be installed in the cluster.
+## With metrics.secure enabled, the manager serves the metrics with a self-signed certificate unless
+## certManager.enabled is set, and the ServiceMonitor then scrapes them with insecureSkipVerify. Enable
+## certManager to have Prometheus verify the certificate of the metrics endpoint.
 ##
 prometheus:
   enabled: false
