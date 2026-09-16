@@ -57,6 +57,13 @@ const (
 	eventActionReconcile = "Reconcile"
 )
 
+// deletionStarted passes the update that sets the deletion timestamp. Setting it does not change the generation,
+// so the start of a deletion has to be observed on its own. Passing every update while the timestamp is set would
+// re-enqueue the resource as soon as a failing finalize writes its status, bypassing the rate limiter.
+var deletionStarted = predicate.Funcs{UpdateFunc: func(e event.UpdateEvent) bool {
+	return e.ObjectOld.GetDeletionTimestamp().IsZero() && !e.ObjectNew.GetDeletionTimestamp().IsZero()
+}}
+
 // AuthentikApplicationReconciler reconciles an AuthentikApplication object
 type AuthentikApplicationReconciler struct {
 	client.Client
@@ -263,15 +270,10 @@ func (r *AuthentikApplicationReconciler) SetupWithManager(mgr ctrl.Manager) erro
 		return fmt.Errorf("failed to add the manager lifetime signal: %w", err)
 	}
 	return ctrl.NewControllerManagedBy(mgr).
-		// Status writes do not change the generation, so they do not trigger another reconcile. Setting a
-		// deletion timestamp does not change it either, so the start of a deletion is observed as a transition.
-		// Every update while the deletion timestamp is set would otherwise re-enqueue the resource as soon as
-		// a failing finalize writes its status, bypassing the rate limiter.
+		// Status writes do not change the generation, so they do not trigger another reconcile.
 		For(&v1alpha1.AuthentikApplication{}, builder.WithPredicates(predicate.Or[client.Object](
 			predicate.GenerationChangedPredicate{},
-			predicate.Funcs{UpdateFunc: func(e event.UpdateEvent) bool {
-				return e.ObjectOld.GetDeletionTimestamp().IsZero() && !e.ObjectNew.GetDeletionTimestamp().IsZero()
-			}},
+			deletionStarted,
 		))).
 		Watches(&v1alpha1.AuthentikApplication{}, handler.EnqueueRequestsFromMapFunc(r.sameSlugRequests),
 			builder.WithPredicates(conflictPredicate)).

@@ -35,6 +35,7 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/cache"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/config"
+	ctrlevent "sigs.k8s.io/controller-runtime/pkg/event"
 	metricsserver "sigs.k8s.io/controller-runtime/pkg/metrics/server"
 
 	"github.com/SlashNephy/authentik-operator/api/v1alpha1"
@@ -1008,6 +1009,29 @@ func TestReconcilePruneDeletesAfterWritingManagedBindings(t *testing.T) {
 	_, _, err = f.reconcile(t, got)
 	require.NoError(t, err)
 	assert.Equal(t, []string{opCreatePolicyBinding, opAssignObjectPermission, opDeletePolicyBinding}, f.authentik.takeWrites())
+}
+
+func TestDeletionStartedPredicate(t *testing.T) {
+	t.Parallel()
+
+	deleting := &v1alpha1.AuthentikApplication{DeletionTimestamp: new(metav1.Now())}
+	live := &v1alpha1.AuthentikApplication{}
+	tests := []struct {
+		name string
+		old  *v1alpha1.AuthentikApplication
+		want bool
+	}{
+		{name: "the deletion timestamp is set", old: live, want: true},
+		{name: "the deletion is already in progress", old: deleting},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			assert.Equal(t, tt.want, deletionStarted.Update(ctrlevent.UpdateEvent{ObjectOld: tt.old, ObjectNew: deleting}))
+		})
+	}
+	assert.False(t, deletionStarted.Update(ctrlevent.UpdateEvent{ObjectOld: live, ObjectNew: live}),
+		"an update of a resource that is not being deleted")
 }
 
 func TestReconcileOutpostMembership(t *testing.T) {
