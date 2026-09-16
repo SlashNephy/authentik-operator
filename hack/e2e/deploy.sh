@@ -10,8 +10,13 @@ AUTHENTIK_NAMESPACE="${AUTHENTIK_NAMESPACE:-authentik}"
 AUTHENTIK_RELEASE="${AUTHENTIK_RELEASE:-authentik}"
 OPERATOR_NAMESPACE="${OPERATOR_NAMESPACE:-authentik-operator}"
 IMG="${IMG:-ghcr.io/slashnephy/authentik-operator:e2e}"
+# CI builds the image with docker/build-push-action so that it can use the GitHub Actions build cache,
+# and sets this to skip the build here. The image must already be in the local Docker image store.
+SKIP_IMAGE_BUILD="${SKIP_IMAGE_BUILD:-}"
 
-docker build -t "${IMG}" .
+if [[ -z "${SKIP_IMAGE_BUILD}" ]]; then
+  docker build -t "${IMG}" .
+fi
 kind load docker-image "${IMG}" --name "${CLUSTER_NAME}"
 
 kubectl create namespace "${OPERATOR_NAMESPACE}" --dry-run=client -o yaml | kubectl apply -f -

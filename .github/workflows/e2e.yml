@@ -29,7 +29,42 @@ jobs:
         with:
           name: e2e
 
+      - name: Set up Docker Buildx
+        id: buildx
+        uses: docker/setup-buildx-action@594f3bf4285d9ea8dc53c9a0c9c4092420091003 # v4.4.0
+
+      # The GitHub Actions cache of BuildKit holds the layers, but not the contents of the cache mounts of the
+      # builder stage. Source changes always invalidate the build layer, so without this the image build
+      # recompiles every dependency on each run.
+      - name: Cache the Go cache mounts of the image build
+        id: cache-mount
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: cache-mount
+          key: go-image-${{ runner.os }}-${{ hashFiles('go.sum', 'Dockerfile') }}
+          restore-keys: |
+            go-image-${{ runner.os }}-
+
+      - name: Restore the Go cache mounts into the builder
+        uses: reproducible-containers/buildkit-cache-dance@5422eac04292c961a382e0f584ea0f03ad9da723 # v3.4.0
+        with:
+          builder: ${{ steps.buildx.outputs.name }}
+          cache-dir: cache-mount
+          dockerfile: Dockerfile
+          skip-extraction: ${{ steps.cache-mount.outputs.cache-hit }}
+
+      - name: Build the manager image
+        uses: docker/build-push-action@c3c9e263c25d99ce0380d002d59b67737d91b0dc # v7.4.0
+        with:
+          context: .
+          load: true
+          tags: ghcr.io/slashnephy/authentik-operator:e2e
+          cache-from: type=gha,scope=e2e
+          cache-to: type=gha,scope=e2e,mode=max
+
       - name: Run the e2e tests
+        env:
+          SKIP_IMAGE_BUILD: "1"
         run: make test-e2e
 
       - name: Collect diagnostics
