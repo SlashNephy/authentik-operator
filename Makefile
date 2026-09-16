@@ -90,8 +90,9 @@ build: manifests generate fmt vet ## Build manager binary.
 	go build -o bin/manager cmd/main.go
 
 .PHONY: run
+# Leader election needs a namespace that a manager outside a cluster does not have, and the console output is
+# easier to read while developing.
 run: manifests generate fmt vet ## Run a controller from your host.
-	# Leader election needs a namespace that a manager outside a cluster does not have.
 	go run ./cmd/main.go --leader-elect=false --zap-devel
 
 # If you wish to build the manager image targeting other platforms you can use the --platform flag.
