@@ -551,6 +551,7 @@ status:
 - **UnmanagedBindings**: an auxiliary condition. It expresses a state in which writes have completed but attention is required.
   It is set to `True` when a CR with `public: false` still has unmanaged Bindings.
 - **Structured fields**: adoption diffs are placed in `status.adoptionDiff`, and unmanaged Bindings in `status.unmanagedBindings`. Confidential values such as client secrets are redacted.
+- **API errors**: the response body of a failed authentik request is shown in the condition message and the Event. The values of confidential fields in the body are redacted the same way, because both are readable by anyone who can read the resource.
 - **Events**: recorded only on state transitions.
 - **metrics**: the standard controller-runtime metrics plus the request count and latency of the authentik API.
 

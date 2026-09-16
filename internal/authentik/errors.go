@@ -17,10 +17,12 @@ limitations under the License.
 package authentik
 
 import (
+	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
 	"net/http"
+	"slices"
 )
 
 // ErrNotFound is matched by errors.Is when authentik answers 404 for the requested object.
@@ -28,6 +30,14 @@ var ErrNotFound = errors.New("authentik object not found")
 
 // maxErrorBodyLength limits how much of a response body is kept in an APIError.
 const maxErrorBodyLength = 4096
+
+// Redacted replaces confidential values that would otherwise be shown to the user (docs/spec.md §5).
+const Redacted = "(redacted)"
+
+// ConfidentialFields are API fields whose values are never shown outside the operator (docs/spec.md §5).
+// Error bodies are echoed into the conditions and the Events of a resource, where they are readable by anyone
+// who can read the resource, so the values of these fields are removed before they are kept.
+var ConfidentialFields = []string{"client_secret", "password", "token"}
 
 // APIError is returned when authentik answers with a non-2xx status code.
 type APIError struct {
@@ -74,8 +84,42 @@ func errorBody(resp *http.Response, err error) string {
 	} else if resp.Body != nil {
 		body, _ = io.ReadAll(io.LimitReader(resp.Body, maxErrorBodyLength))
 	}
-	if len(body) > maxErrorBodyLength {
-		body = body[:maxErrorBodyLength]
+	redacted := redactBody(body)
+	if len(redacted) > maxErrorBodyLength {
+		redacted = redacted[:maxErrorBodyLength]
 	}
-	return string(body)
+	return redacted
+}
+
+// redactBody removes the values of the confidential fields from a JSON body. A body that is not JSON is kept
+// as it is, because it carries no request payload.
+func redactBody(body []byte) string {
+	var value any
+	if err := json.Unmarshal(body, &value); err != nil {
+		return string(body)
+	}
+	redactValue(value)
+	out, err := json.Marshal(value)
+	if err != nil {
+		return string(body)
+	}
+	return string(out)
+}
+
+// redactValue replaces the values of the confidential fields in place.
+func redactValue(value any) {
+	switch typed := value.(type) {
+	case map[string]any:
+		for key, child := range typed {
+			if slices.Contains(ConfidentialFields, key) {
+				typed[key] = Redacted
+				continue
+			}
+			redactValue(child)
+		}
+	case []any:
+		for _, child := range typed {
+			redactValue(child)
+		}
+	}
 }

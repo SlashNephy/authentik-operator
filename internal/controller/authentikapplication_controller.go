@@ -277,7 +277,9 @@ func (r *AuthentikApplicationReconciler) SetupWithManager(mgr ctrl.Manager) erro
 		))).
 		Watches(&v1alpha1.AuthentikApplication{}, handler.EnqueueRequestsFromMapFunc(r.sameSlugRequests),
 			builder.WithPredicates(conflictPredicate)).
-		Watches(&corev1.Secret{}, handler.EnqueueRequestsFromMapFunc(r.credentialsSecretRequests)).
+		// Only the metadata of the Secrets is watched, so that the contents of every Secret in the cluster are
+		// not held in the cache. The credentials themselves are read from the API server on demand.
+		WatchesMetadata(&corev1.Secret{}, handler.EnqueueRequestsFromMapFunc(r.credentialsSecretRequests)).
 		WatchesRawSource(source.Channel(r.roleEvents, &handler.EnqueueRequestForObject{})).
 		Named("authentikapplication").
 		WithOptions(controller.Options{

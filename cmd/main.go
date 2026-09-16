@@ -27,10 +27,12 @@ import (
 	// to ensure that exec-entrypoint and run can make use of them.
 	_ "k8s.io/client-go/plugin/pkg/client/auth"
 
+	corev1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/runtime"
 	utilruntime "k8s.io/apimachinery/pkg/util/runtime"
 	clientgoscheme "k8s.io/client-go/kubernetes/scheme"
 	ctrl "sigs.k8s.io/controller-runtime"
+	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/healthz"
 	logf "sigs.k8s.io/controller-runtime/pkg/log"
 	"sigs.k8s.io/controller-runtime/pkg/log/zap"
@@ -203,7 +205,12 @@ func main() {
 	}
 
 	mgr, err := ctrl.NewManager(ctrl.GetConfigOrDie(), ctrl.Options{
-		Scheme:                 scheme,
+		Scheme: scheme,
+		// Secrets are read straight from the API server. The operator reads the credentials Secret of a
+		// resource, and caching them would keep the contents of every Secret in the cluster in memory.
+		Client: client.Options{
+			Cache: &client.CacheOptions{DisableFor: []client.Object{&corev1.Secret{}}},
+		},
 		Metrics:                metricsServerOptions,
 		WebhookServer:          webhookServer,
 		HealthProbeBindAddress: probeAddr,
@@ -262,7 +269,7 @@ const versionCheckTimeout = 30 * time.Second
 
 // checkAuthentikVersion reports whether the authentik server matches the supported minor version (docs/spec.md §6).
 // Failures are logged and do not stop the operator, because authentik may be temporarily unreachable at startup.
-func checkAuthentikVersion(client authentik.VersionClient) {
+func checkAuthentikVersion(versionClient authentik.VersionClient) {
 	supported, err := authentik.SupportedVersion()
 	if err != nil {
 		setupLog.Error(err, "Failed to determine the supported authentik version; skipping the version check")
@@ -273,7 +280,7 @@ func checkAuthentikVersion(client authentik.VersionClient) {
 	defer cancel()
 	// CheckVersion logs through the context, so carry setupLog into it to keep the "setup" name.
 	ctx = logf.IntoContext(ctx, setupLog)
-	if _, err := authentik.CheckVersion(ctx, client, supported); err != nil {
+	if _, err := authentik.CheckVersion(ctx, versionClient, supported); err != nil {
 		setupLog.Error(err, "Failed to check the authentik version")
 	}
 }
