@@ -24,7 +24,7 @@ import (
 	"strconv"
 	"strings"
 
-	"github.com/go-logr/logr"
+	logf "sigs.k8s.io/controller-runtime/pkg/log"
 )
 
 // clientModulePath is the module path of client-go, whose version determines the supported authentik minor version.
@@ -87,7 +87,9 @@ func minorFromServerVersion(version string) (string, error) {
 // CheckVersion compares the authentik server minor version with the supported one.
 // A mismatch is reported as a warning log and the authentik_operator_authentik_version_mismatch metric;
 // it does not stop the operator. It returns whether the minor versions match.
-func CheckVersion(ctx context.Context, client VersionClient, supported string, log logr.Logger) (bool, error) {
+func CheckVersion(ctx context.Context, client VersionClient, supported string) (bool, error) {
+	log := logf.FromContext(ctx)
+
 	version, err := client.GetVersion(ctx)
 	if err != nil {
 		return false, fmt.Errorf("failed to read the authentik version: %w", err)
