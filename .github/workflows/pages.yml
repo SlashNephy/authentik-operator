@@ -1,0 +1,54 @@
+name: Pages
+
+on:
+  push:
+    branches:
+      - main
+    paths:
+      - docs/pages/**
+      - .github/workflows/pages.yml
+  workflow_dispatch:
+
+permissions: {}
+
+# Keep a group of its own: sharing the group of the Release workflow would let a queued release be
+# cancelled, because GitHub keeps only one pending run per group. The push below rebases instead.
+concurrency:
+  group: pages
+  cancel-in-progress: false
+
+jobs:
+  publish:
+    name: Publish the site
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - name: Clone the code
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Clone the gh-pages branch
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: gh-pages
+          path: gh-pages
+
+      - name: Copy the site
+        run: cp docs/pages/index.md docs/pages/_config.yml gh-pages/
+
+      - name: Commit and push
+        run: |
+          cd gh-pages
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add index.md _config.yml
+          if git diff --cached --quiet; then
+            echo "The site is already up to date."
+            exit 0
+          fi
+          git commit -m "chore: publish the site"
+          # The Release workflow pushes index.yaml to the same branch and never touches these files.
+          git pull --rebase origin gh-pages
+          git push origin HEAD:gh-pages
