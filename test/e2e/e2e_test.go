@@ -174,9 +174,10 @@ func update(t *testing.T, app *v1alpha1.AuthentikApplication, mutate func(*v1alp
 	}, waitTimeout, pollInterval)
 }
 
-func embeddedOutpostProviders(t *testing.T) []int32 {
-	t.Helper()
-	outposts, err := ak.FindOutpostsByName(t.Context(), embeddedOutpost)
+// embeddedOutpostProviders returns the Providers of the embedded outpost.
+// It takes require.TestingT so that it can be called from inside EventuallyWithT as well.
+func embeddedOutpostProviders(ctx context.Context, t require.TestingT) []int32 {
+	outposts, err := ak.FindOutpostsByName(ctx, embeddedOutpost)
 	require.NoError(t, err)
 	require.Len(t, outposts, 1)
 	return outposts[0].Providers
@@ -201,7 +202,11 @@ func TestProxyApplicationLifecycle(t *testing.T) {
 	require.NoError(t, err)
 	assert.Equal(t, namespace, provider.Name)
 	assert.Equal(t, new(api.PROXYMODE_FORWARD_SINGLE), provider.Mode)
-	assert.Contains(t, embeddedOutpostProviders(t), providerPK, "the Provider joins the embedded outpost")
+	// Outpost membership is a single shared list that the operator converges asynchronously, and
+	// TestOutpostMembershipIsRepaired rewrites it in parallel, so observe it over time instead of once.
+	require.EventuallyWithT(t, func(c *assert.CollectT) {
+		assert.Contains(c, embeddedOutpostProviders(ctx, c), providerPK, "the Provider joins the embedded outpost")
+	}, waitTimeout, pollInterval)
 
 	bindings, err := ak.ListPolicyBindings(ctx, application.PbmUuid)
 	require.NoError(t, err)
@@ -234,7 +239,9 @@ func TestProxyApplicationLifecycle(t *testing.T) {
 		require.ErrorIs(t, err, authentik.ErrNotFound)
 		_, err = ak.GetProxyProvider(ctx, providerPK)
 		require.ErrorIs(t, err, authentik.ErrNotFound)
-		assert.NotContains(t, embeddedOutpostProviders(t), providerPK)
+		require.EventuallyWithT(t, func(c *assert.CollectT) {
+			assert.NotContains(c, embeddedOutpostProviders(ctx, c), providerPK, "the Provider leaves the embedded outpost")
+		}, waitTimeout, pollInterval)
 	})
 }
 
