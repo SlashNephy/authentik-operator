@@ -621,6 +621,10 @@ type AuthentikApplicationStatus struct {
 	// +optional
 	ProviderPK *int64 `json:"providerPK,omitempty"`
 
+	// outpostUUID is the UUID of the Outpost that the managed Proxy Provider was added to.
+	// +optional
+	OutpostUUID string `json:"outpostUUID,omitempty"`
+
 	// bindingUUIDs are the UUIDs of the managed Bindings.
 	// +optional
 	// +listType=set

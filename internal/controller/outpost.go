@@ -26,18 +26,31 @@ import (
 // reconcileOutpost ensures that the Proxy Provider is in the providers of its Outpost (docs/spec.md §3.7).
 // The Outpost itself is not managed. The providers list is replaced as a whole with read-modify-write, which is
 // safe against other reconciles because they are serialized.
+//
+// The Outpost that the Provider was added to is recorded in the status. When outpost changes, the Provider is
+// added to the new Outpost first and removed from the recorded one afterwards, so that it is never attached to
+// no Outpost at all. Outposts that the operator never recorded are left alone, because attaching a Provider to
+// several Outposts by hand is a supported setup.
 func (r *AuthentikApplicationReconciler) reconcileOutpost(ctx context.Context, s *reconcileState, providerPK int32) error {
 	uuid := s.resolved.Proxy.Outpost
 	outpost, err := r.Authentik.GetOutpost(ctx, uuid)
 	if err != nil {
 		return err
 	}
-	if slices.Contains(outpost.Providers, providerPK) {
-		return nil
+	if !slices.Contains(outpost.Providers, providerPK) {
+		if _, err := r.Authentik.SetOutpostProviders(ctx, uuid, append(slices.Clone(outpost.Providers), providerPK)); err != nil {
+			return err
+		}
+		logf.FromContext(ctx).Info("Added Provider to Outpost", "outpost", outpost.Name, "provider", providerPK)
 	}
-	if _, err := r.Authentik.SetOutpostProviders(ctx, uuid, append(slices.Clone(outpost.Providers), providerPK)); err != nil {
-		return err
+
+	if previous := s.app.Status.OutpostUUID; previous != "" && previous != uuid {
+		if err := r.leaveOutpostByUUID(ctx, previous, providerPK); err != nil {
+			return err
+		}
+		logf.FromContext(ctx).Info("Removed Provider from the previous Outpost", "outpost", previous, "provider", providerPK)
 	}
-	logf.FromContext(ctx).Info("Added Provider to Outpost", "outpost", outpost.Name, "provider", providerPK)
+	// Recorded last, so that a failed removal is retried with the previous Outpost still known.
+	s.app.Status.OutpostUUID = uuid
 	return nil
 }

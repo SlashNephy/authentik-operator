@@ -705,6 +705,10 @@ spec:
                   was last reconciled.
                 format: int64
                 type: integer
+              outpostUUID:
+                description: outpostUUID is the UUID of the Outpost that the managed
+                  Proxy Provider was added to.
+                type: string
               providerPK:
                 description: providerPK is the primary key of the managed Provider.
                 format: int64

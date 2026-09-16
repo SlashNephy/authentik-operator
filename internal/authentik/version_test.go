@@ -67,6 +67,7 @@ func TestMinorFromServerVersion(t *testing.T) {
 	}{
 		{version: serverVersion, want: supportedMinor},
 		{version: "2026.8.0-rc1", want: supportedMinor},
+		{version: "v2026.8.2", want: supportedMinor},
 		{version: "2025.10.1", want: "2025.10"},
 		{version: "", wantErr: true},
 		{version: "latest", wantErr: true},

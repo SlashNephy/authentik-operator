@@ -48,6 +48,33 @@ func TestMarkerCollectionRemovesMarkersOfDeletedObjects(t *testing.T) {
 	assert.Zero(t, removed, "a second collection finds nothing")
 }
 
+func TestRoleEventsAreAbandonedWhenTheManagerStops(t *testing.T) {
+	t.Parallel()
+	f := newFixture(t)
+	// Unbuffered and never received from, as after the manager stopped the controller.
+	f.reconciler.roleEvents = make(chan event.GenericEvent)
+	f.reconciler.managerStopped = make(chan struct{})
+
+	returned := make(chan struct{})
+	go func() {
+		defer close(returned)
+		f.reconciler.sendRoleEvents([]event.GenericEvent{{Object: f.create(t, f.proxySpec())}})
+	}()
+
+	select {
+	case <-returned:
+		t.Fatal("the send returned before the manager stopped")
+	case <-time.After(100 * time.Millisecond):
+	}
+
+	close(f.reconciler.managerStopped)
+	select {
+	case <-returned:
+	case <-time.After(10 * time.Second):
+		t.Fatal("the send was not abandoned after the manager stopped")
+	}
+}
+
 func TestRoleRecreationRequeuesEveryResource(t *testing.T) {
 	t.Parallel()
 	f := newFixture(t)

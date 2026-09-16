@@ -65,6 +65,28 @@ func (*markerCollector) NeedLeaderElection() bool {
 	return true
 }
 
+// managerLifetime closes done when the manager stops, so that background sends can be abandoned.
+type managerLifetime struct {
+	done chan struct{}
+}
+
+var (
+	_ manager.Runnable               = new(managerLifetime)
+	_ manager.LeaderElectionRunnable = new(managerLifetime)
+)
+
+// Start closes done once ctx is done.
+func (l *managerLifetime) Start(ctx context.Context) error {
+	<-ctx.Done()
+	close(l.done)
+	return nil
+}
+
+// NeedLeaderElection runs the signal regardless of leadership, because it only observes the manager.
+func (*managerLifetime) NeedLeaderElection() bool {
+	return false
+}
+
 // requeueAll reconciles every resource, so that the markers of the objects recorded in their status are attached
 // again after the role was recreated (docs/spec.md §3.1).
 func (r *AuthentikApplicationReconciler) requeueAll(ctx context.Context) {
@@ -81,9 +103,17 @@ func (r *AuthentikApplicationReconciler) requeueAll(ctx context.Context) {
 		events = append(events, event.GenericEvent{Object: client.Object(&list.Items[i])})
 	}
 	// The markers are refreshed inside a reconcile, which must not block on the queue it feeds.
-	go func() {
-		for _, e := range events {
-			r.roleEvents <- e
+	go r.sendRoleEvents(events)
+}
+
+// sendRoleEvents sends the events to roleEvents. The reconcile context ends as soon as the reconcile returns, so
+// the sends are bounded by the lifetime of the manager instead and are abandoned once it stops reading.
+func (r *AuthentikApplicationReconciler) sendRoleEvents(events []event.GenericEvent) {
+	for _, e := range events {
+		select {
+		case r.roleEvents <- e:
+		case <-r.managerStopped:
+			return
 		}
-	}()
+	}
 }

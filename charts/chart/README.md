@@ -67,6 +67,6 @@ helm install authentik-operator ./charts/chart \
 | `manager.image.tag` | Chart `appVersion` | Image tag |
 | `metrics.enabled` | `true` | Serve metrics through the metrics Service |
 | `metrics.secure` | `true` | Serve metrics over HTTPS with authentication and authorization |
-| `prometheus.enabled` | `false` | Create a ServiceMonitor |
+| `prometheus.enabled` | `false` | Create a ServiceMonitor. Without `certManager.enabled`, the metrics are served with a self-signed certificate and the ServiceMonitor scrapes them with `insecureSkipVerify` |
 
 See [values.yaml](values.yaml) for the remaining settings of the Deployment.

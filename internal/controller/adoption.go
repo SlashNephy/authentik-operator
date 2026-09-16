@@ -35,14 +35,14 @@ import (
 const (
 	eventReasonAdopted = "Adopted"
 	// redacted replaces confidential values in adoption diffs.
-	redacted = "(redacted)"
+	redacted = authentik.Redacted
 )
 
 // nameField is the name field of both the Application and the Providers in the API and in the spec.
 const nameField = "name"
 
 // confidentialFields are API fields whose values are never shown in adoption diffs (docs/spec.md §5).
-var confidentialFields = []string{"client_secret"}
+var confidentialFields = authentik.ConfidentialFields
 
 // applicationFieldPaths maps Application API fields to spec paths.
 var applicationFieldPaths = map[string]string{

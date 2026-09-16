@@ -57,6 +57,13 @@ const (
 	eventActionReconcile = "Reconcile"
 )
 
+// deletionStarted passes the update that sets the deletion timestamp. Setting it does not change the generation,
+// so the start of a deletion has to be observed on its own. Passing every update while the timestamp is set would
+// re-enqueue the resource as soon as a failing finalize writes its status, bypassing the rate limiter.
+var deletionStarted = predicate.Funcs{UpdateFunc: func(e event.UpdateEvent) bool {
+	return e.ObjectOld.GetDeletionTimestamp().IsZero() && !e.ObjectNew.GetDeletionTimestamp().IsZero()
+}}
+
 // AuthentikApplicationReconciler reconciles an AuthentikApplication object
 type AuthentikApplicationReconciler struct {
 	client.Client
@@ -74,6 +81,8 @@ type AuthentikApplicationReconciler struct {
 	markerList  *markerCache
 	// roleEvents receives the resources to reconcile after the ownership role was recreated.
 	roleEvents chan event.GenericEvent
+	// managerStopped is closed when the manager stops, so that sends to roleEvents are not blocked forever.
+	managerStopped chan struct{}
 }
 
 // +kubebuilder:rbac:groups=authentik.starry.blue,resources=authentikapplications,verbs=get;list;watch;create;update;patch;delete
@@ -256,16 +265,21 @@ func (r *AuthentikApplicationReconciler) SetupWithManager(mgr ctrl.Manager) erro
 		}
 	}
 	r.roleEvents = make(chan event.GenericEvent)
+	r.managerStopped = make(chan struct{})
+	if err := mgr.Add(&managerLifetime{done: r.managerStopped}); err != nil {
+		return fmt.Errorf("failed to add the manager lifetime signal: %w", err)
+	}
 	return ctrl.NewControllerManagedBy(mgr).
-		// Status writes do not change the generation, so they do not trigger another reconcile. The start of a
-		// deletion always does.
+		// Status writes do not change the generation, so they do not trigger another reconcile.
 		For(&v1alpha1.AuthentikApplication{}, builder.WithPredicates(predicate.Or[client.Object](
 			predicate.GenerationChangedPredicate{},
-			predicate.Funcs{UpdateFunc: func(e event.UpdateEvent) bool { return !e.ObjectNew.GetDeletionTimestamp().IsZero() }},
+			deletionStarted,
 		))).
 		Watches(&v1alpha1.AuthentikApplication{}, handler.EnqueueRequestsFromMapFunc(r.sameSlugRequests),
 			builder.WithPredicates(conflictPredicate)).
-		Watches(&corev1.Secret{}, handler.EnqueueRequestsFromMapFunc(r.credentialsSecretRequests)).
+		// Only the metadata of the Secrets is watched, so that the contents of every Secret in the cluster are
+		// not held in the cache. The credentials themselves are read from the API server on demand.
+		WatchesMetadata(&corev1.Secret{}, handler.EnqueueRequestsFromMapFunc(r.credentialsSecretRequests)).
 		WatchesRawSource(source.Channel(r.roleEvents, &handler.EnqueueRequestForObject{})).
 		Named("authentikapplication").
 		WithOptions(controller.Options{
