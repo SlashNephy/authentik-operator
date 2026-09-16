@@ -67,9 +67,9 @@ func minorFromClientVersion(version string) (string, error) {
 	return fmt.Sprintf("%d.%d", year, minor), nil
 }
 
-// minorFromServerVersion converts an authentik version such as 2026.8.2 or 2026.8.0-rc1 into 2026.8.
+// minorFromServerVersion converts an authentik version such as 2026.8.2, v2026.8.2 or 2026.8.0-rc1 into 2026.8.
 func minorFromServerVersion(version string) (string, error) {
-	parts := strings.Split(version, ".")
+	parts := strings.Split(strings.TrimPrefix(version, "v"), ".")
 	if len(parts) < 2 {
 		return "", fmt.Errorf("unexpected authentik version %q", version)
 	}

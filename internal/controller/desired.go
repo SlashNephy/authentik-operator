@@ -189,7 +189,7 @@ func createProxyProviderRequest(name string, desired *api.PatchedProxyProviderRe
 		AuthorizationFlow:          *desired.AuthorizationFlow,
 		InvalidationFlow:           *desired.InvalidationFlow,
 		InternalHost:               desired.InternalHost,
-		ExternalHost:               *desired.ExternalHost,
+		ExternalHost:               *cmp.Or(desired.ExternalHost, new("")),
 		InternalHostSslValidation:  desired.InternalHostSslValidation,
 		Certificate:                desired.Certificate,
 		SkipPathRegex:              desired.SkipPathRegex,

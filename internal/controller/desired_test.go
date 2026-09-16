@@ -41,13 +41,13 @@ func TestDesiredApplication(t *testing.T) {
 	}{
 		{
 			name: "only required fields",
-			spec: v1alpha1.AuthentikApplicationSpec{Slug: "wiki", Name: testName},
+			spec: v1alpha1.AuthentikApplicationSpec{Slug: proxySlug, Name: testName},
 			want: &api.PatchedApplicationRequest{Name: new(testName)},
 		},
 		{
 			name: "every field including false and empty values",
 			spec: v1alpha1.AuthentikApplicationSpec{
-				Slug: "wiki", Name: testName,
+				Slug: proxySlug, Name: testName,
 				LaunchURL: new("https://wiki.example.com"), Icon: new("fa://fa-book"), Description: new(""),
 				Publisher: new("Example"), Group: new("Docs"), OpenInNewTab: new(false), HideFromApplicationDashboard: new(true),
 				Access: v1alpha1.AccessSpec{Mode: new(v1alpha1.AccessModeAll)},
@@ -125,6 +125,39 @@ func TestDesiredProxyProvider(t *testing.T) {
 			t.Parallel()
 			provider := &v1alpha1.ProviderSpec{Proxy: &tt.proxy}
 			assert.Equal(t, tt.want, desiredProxyProvider(provider, testFlows(), &tt.refs))
+		})
+	}
+}
+
+func TestCreateProxyProviderRequest(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name    string
+		desired *api.PatchedProxyProviderRequest
+		want    *api.ProxyProviderRequest
+	}{
+		{
+			name: "the desired fields are carried over",
+			desired: &api.PatchedProxyProviderRequest{
+				AuthorizationFlow: new("a"), InvalidationFlow: new("i"),
+				Mode: new(api.PROXYMODE_PROXY), ExternalHost: new(externalHost), InternalHost: new("http://wiki"),
+			},
+			want: &api.ProxyProviderRequest{
+				Name: proxySlug, AuthorizationFlow: "a", InvalidationFlow: "i",
+				Mode: new(api.PROXYMODE_PROXY), ExternalHost: externalHost, InternalHost: new("http://wiki"),
+			},
+		},
+		{
+			name:    "a missing external host becomes empty instead of a panic",
+			desired: &api.PatchedProxyProviderRequest{AuthorizationFlow: new("a"), InvalidationFlow: new("i")},
+			want:    &api.ProxyProviderRequest{Name: proxySlug, AuthorizationFlow: "a", InvalidationFlow: "i"},
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			assert.Equal(t, tt.want, createProxyProviderRequest(proxySlug, tt.desired))
 		})
 	}
 }

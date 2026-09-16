@@ -51,6 +51,7 @@ const (
 	resyncInterval    = 10 * time.Minute
 	testName          = "Wiki"
 	oauth2Slug        = "chat"
+	proxySlug         = "wiki"
 	normalCreated     = "Normal Created"
 	manualName        = "Manual"
 

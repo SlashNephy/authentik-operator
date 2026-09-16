@@ -74,6 +74,8 @@ type AuthentikApplicationReconciler struct {
 	markerList  *markerCache
 	// roleEvents receives the resources to reconcile after the ownership role was recreated.
 	roleEvents chan event.GenericEvent
+	// managerStopped is closed when the manager stops, so that sends to roleEvents are not blocked forever.
+	managerStopped chan struct{}
 }
 
 // +kubebuilder:rbac:groups=authentik.starry.blue,resources=authentikapplications,verbs=get;list;watch;create;update;patch;delete
@@ -256,12 +258,20 @@ func (r *AuthentikApplicationReconciler) SetupWithManager(mgr ctrl.Manager) erro
 		}
 	}
 	r.roleEvents = make(chan event.GenericEvent)
+	r.managerStopped = make(chan struct{})
+	if err := mgr.Add(&managerLifetime{done: r.managerStopped}); err != nil {
+		return fmt.Errorf("failed to add the manager lifetime signal: %w", err)
+	}
 	return ctrl.NewControllerManagedBy(mgr).
-		// Status writes do not change the generation, so they do not trigger another reconcile. The start of a
-		// deletion always does.
+		// Status writes do not change the generation, so they do not trigger another reconcile. Setting a
+		// deletion timestamp does not change it either, so the start of a deletion is observed as a transition.
+		// Every update while the deletion timestamp is set would otherwise re-enqueue the resource as soon as
+		// a failing finalize writes its status, bypassing the rate limiter.
 		For(&v1alpha1.AuthentikApplication{}, builder.WithPredicates(predicate.Or[client.Object](
 			predicate.GenerationChangedPredicate{},
-			predicate.Funcs{UpdateFunc: func(e event.UpdateEvent) bool { return !e.ObjectNew.GetDeletionTimestamp().IsZero() }},
+			predicate.Funcs{UpdateFunc: func(e event.UpdateEvent) bool {
+				return e.ObjectOld.GetDeletionTimestamp().IsZero() && !e.ObjectNew.GetDeletionTimestamp().IsZero()
+			}},
 		))).
 		Watches(&v1alpha1.AuthentikApplication{}, handler.EnqueueRequestsFromMapFunc(r.sameSlugRequests),
 			builder.WithPredicates(conflictPredicate)).
