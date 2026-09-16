@@ -994,6 +994,25 @@ func TestReconcileUnmanagedBindings(t *testing.T) {
 	}
 }
 
+func TestRuleAddedLaterAdoptsAMatchingUnmanagedBinding(t *testing.T) {
+	t.Parallel()
+	f := newFixture(t)
+	_, got, err := f.reconcile(t, f.create(t, f.proxySpec()))
+	require.NoError(t, err)
+	require.NotEmpty(t, got.Status.BindingUUIDs, "a Binding is already recorded")
+	legacy := f.legacyBinding(t)
+
+	got.Spec.Access.Rules = append(got.Spec.Access.Rules, v1alpha1.AccessRule{Group: &v1alpha1.NamedReference{Name: new("legacy")}})
+	require.NoError(t, k8sClient.Update(t.Context(), got))
+
+	_, got, err = f.reconcile(t, got)
+	require.NoError(t, err)
+	assert.Equal(t, []string{opAssignObjectPermission}, f.authentik.takeWrites(),
+		"the existing Binding is marked instead of a second one being created")
+	assert.Contains(t, got.Status.BindingUUIDs, legacy.Pk)
+	assert.Empty(t, got.Status.UnmanagedBindings)
+}
+
 func TestReconcilePruneDeletesAfterWritingManagedBindings(t *testing.T) {
 	t.Parallel()
 	f := newFixture(t)
@@ -1087,6 +1106,33 @@ func TestReconcileOutpostMembership(t *testing.T) {
 			assert.Equal(t, []int32{orphan.Pk, pk}, outpost.Providers)
 		})
 	}
+}
+
+func TestOutpostChangeLeavesThePreviousOutpost(t *testing.T) {
+	t.Parallel()
+	f := newFixture(t)
+	ctx := t.Context()
+	dedicated := f.authentik.AddOutpost("dedicated")
+	embedded, err := f.authentik.FindOutpostsByName(ctx, reference.EmbeddedOutpostName)
+	require.NoError(t, err)
+
+	_, got, err := f.reconcile(t, f.create(t, f.proxySpec()))
+	require.NoError(t, err)
+	pk := int32(*got.Status.ProviderPK)
+	require.Equal(t, embedded[0].Pk, got.Status.OutpostUUID)
+
+	got.Spec.Provider.Proxy.Outpost = &v1alpha1.NamedReference{Name: new("dedicated")}
+	require.NoError(t, k8sClient.Update(ctx, got))
+	_, got, err = f.reconcile(t, got)
+	require.NoError(t, err)
+
+	assert.Equal(t, dedicated.Pk, got.Status.OutpostUUID)
+	moved, err := f.authentik.GetOutpost(ctx, dedicated.Pk)
+	require.NoError(t, err)
+	assert.Equal(t, []int32{pk}, moved.Providers)
+	previous, err := f.authentik.GetOutpost(ctx, embedded[0].Pk)
+	require.NoError(t, err)
+	assert.Empty(t, previous.Providers, "the Provider no longer belongs to the previous Outpost")
 }
 
 func TestReconcileWithoutEmbeddedOutpost(t *testing.T) {

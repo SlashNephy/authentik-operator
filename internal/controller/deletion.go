@@ -174,6 +174,21 @@ func (r *AuthentikApplicationReconciler) leaveOutpost(ctx context.Context, ref *
 		}
 		outpost = &found[0]
 	}
+	return r.removeProviderFromOutpost(ctx, outpost, pk)
+}
+
+// leaveOutpostByUUID removes the Provider from the providers of the Outpost with the UUID. An Outpost that no
+// longer exists is skipped.
+func (r *AuthentikApplicationReconciler) leaveOutpostByUUID(ctx context.Context, uuid string, pk int32) error {
+	outpost, err := r.Authentik.GetOutpost(ctx, uuid)
+	if err != nil {
+		return ignoreNotFound(err)
+	}
+	return r.removeProviderFromOutpost(ctx, outpost, pk)
+}
+
+// removeProviderFromOutpost writes back the providers of the Outpost without the Provider.
+func (r *AuthentikApplicationReconciler) removeProviderFromOutpost(ctx context.Context, outpost *api.Outpost, pk int32) error {
 	if !slices.Contains(outpost.Providers, pk) {
 		return nil
 	}

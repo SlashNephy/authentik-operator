@@ -324,6 +324,7 @@ To recover from this state without relying on the `adopt` setting, the following
 - `status` holds the following values.
   - The slug and pk of the Application
   - The pk of the Provider
+  - The UUID of the Outpost the Provider was added to
   - The list of UUIDs of managed Bindings
   - `observedGeneration`
   - `lastAppliedHash`
@@ -400,6 +401,7 @@ Adoption has the following accompanying rules.
   If the type matches, the Provider is adopted together with the Application.
   If the Application has no Provider attached and the spec has `provider`, a new Provider is created and attached.
 - **PolicyBinding**: existing Bindings whose target and `negate` match a rule in `access.rules` are adopted.
+  This also applies to a rule added to an existing CR, because a second Binding for the same subject would duplicate the access right.
   Bindings that do not match are treated as unmanaged (§3.5).
 - **Credentials**: when `credentials` is specified and the Secret exists, the client secret is also compared. The diff is shown redacted.
   When the Secret does not exist, no comparison is made, and the values of the adopted Provider are written to the Secret (§2.5).
@@ -444,6 +446,9 @@ Applying only some of the references is not an option because access rights coul
   Environments with the `outposts.disable_embedded_outpost` setting enabled have no embedded outpost, so a CR that omits `outpost` results in `ReferenceNotFound` (§3.6).
 - `providers` is updated with read-modify-write, so the operator serializes reconciles with `MaxConcurrentReconciles=1`.
   The authentik API has no optimistic locking, so conflicts with concurrent edits from the UI remain.
+- The UUID of the Outpost the Provider was added to is recorded in `status.outpostUUID`.
+  When `outpost` changes, the Provider is added to the new Outpost first and removed from the recorded one afterwards, so that it is never attached to no Outpost at all.
+  Outposts that the operator never recorded are left untouched, so a Provider attached to several Outposts by hand keeps those attachments.
 
 ### 3.8 Deletion (`spec.deletionPolicy`)
 

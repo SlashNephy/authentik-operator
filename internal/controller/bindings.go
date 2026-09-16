@@ -64,19 +64,18 @@ func (r *AuthentikApplicationReconciler) reconcileBindings(ctx context.Context, 
 		return err
 	}
 	matched := matchBindings(s.resolved.Rules, managed, false)
-	if len(s.app.Status.BindingUUIDs) == 0 {
-		// No Binding has been recorded yet, as right after adoption: existing Bindings whose subject and negate
-		// match a rule are adopted (docs/spec.md §3.4).
-		for i, binding := range matchBindings(s.resolved.Rules, unmanaged, true) {
-			if matched[i] != nil || binding == nil {
-				continue
-			}
-			if err := r.markers().ensure(ctx, bindingObject(binding.Pk)); err != nil {
-				return err
-			}
-			matched[i] = binding
-			logf.FromContext(ctx).Info("Adopted PolicyBinding", "uuid", binding.Pk)
+	// Existing Bindings whose subject and negate match a rule are adopted (docs/spec.md §3.4). A rule added
+	// later is adopted the same way, because creating a second Binding for the same subject would duplicate the
+	// access right, and the duplicate would fight the existing Binding for its order.
+	for i, binding := range matchBindings(s.resolved.Rules, unmanaged, true) {
+		if matched[i] != nil || binding == nil {
+			continue
 		}
+		if err := r.markers().ensure(ctx, bindingObject(binding.Pk)); err != nil {
+			return err
+		}
+		matched[i] = binding
+		logf.FromContext(ctx).Info("Adopted PolicyBinding", "uuid", binding.Pk)
 	}
 
 	kept := make([]string, 0, len(s.resolved.Rules))
