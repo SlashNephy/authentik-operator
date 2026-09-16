@@ -24,6 +24,14 @@ Pushing a tag alone publishes nothing, and a draft release starts the workflow o
 The Helm repository is served from GitHub Pages at `https://slashnephy.github.io/authentik-operator`.
 No other tag or release is created.
 
+## The Pages site
+
+The same GitHub Pages site serves a landing page, so that a browser that opens the Helm repository URL is not answered with a 404.
+Its source is [docs/pages](pages), and [.github/workflows/pages.yml](../.github/workflows/pages.yml) copies `index.md` and `_config.yml` to the `gh-pages` branch on a push to `main` that touches them. It can also be started by hand with `gh workflow run pages.yml`.
+
+GitHub Pages builds the branch with Jekyll, which turns `index.md` into `index.html` and copies `index.yaml` verbatim.
+Keep `_config.yml` minimal: a Jekyll build failure would also stop serving `index.yaml`.
+
 A release created with `GITHUB_TOKEN` in another workflow does not start the Release workflow, so releases are created by a person.
 
 ## One-time setup

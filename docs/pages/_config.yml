@@ -1,0 +1,17 @@
+# Jekyll configuration of the GitHub Pages site that serves the Helm repository.
+# Keep this minimal: a build failure here also takes down index.yaml.
+theme: jekyll-theme-primer
+
+title: authentik-operator
+description: A Kubernetes operator that manages authentik Applications, Providers, and access rights declaratively
+
+# The site is a project page, so its assets live under the repository path.
+url: https://slashnephy.github.io
+baseurl: /authentik-operator
+
+github:
+  # The page is published to gh-pages from docs/pages on main.
+  # Point the "Improve this page" link of the theme at the source, not at the generated copy.
+  source:
+    branch: main
+    path: docs/pages

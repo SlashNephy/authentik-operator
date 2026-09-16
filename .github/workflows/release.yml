@@ -112,6 +112,8 @@ jobs:
           TAG: ${{ github.event.release.tag_name }}
           VERSION: ${{ needs.check.outputs.version }}
           REPOSITORY: ${{ github.repository }}
+        # The generated index.yaml starts with `apiVersion:`, so Jekyll copies it verbatim.
+        # Keep it that way: a leading `---` would be read as front matter and stripped from the served file.
         run: |
           helm repo index dist/chart \
             --url "https://github.com/${REPOSITORY}/releases/download/${TAG}" \
