@@ -17,7 +17,7 @@ Publishing a GitHub release of a `v*` tag runs [.github/workflows/release.yml](.
 Pushing a tag alone publishes nothing, and a draft release starts the workflow only when it is published.
 
 1. `hack/release/check-version.sh` rejects a tag that does not follow the scheme or that names a different authentik minor version than client-go in `go.mod`.
-2. The container image is built for `linux/amd64` and `linux/arm64` and pushed to `ghcr.io/slashnephy/authentik-operator:<version>`.
+2. The container image is built for `linux/amd64` and `linux/arm64` and pushed to `ghcr.io/slashnephy/authentik-operator`, tagged `<version>`, `latest`, and the commit SHA. `docker/metadata-action` also writes the OCI labels.
 3. The chart version and appVersion are set to `<version>`, and the packaged chart is attached to the release.
 4. The Helm repository index on the `gh-pages` branch gets an entry that points to the attached chart.
 
