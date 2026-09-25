@@ -6,7 +6,7 @@ require (
 	github.com/prometheus/client_golang v1.24.1
 	github.com/prometheus/client_model v0.6.3
 	github.com/stretchr/testify v1.12.1
-	goauthentik.io/api/v3 v3.2026080.2
+	goauthentik.io/api/v3 v3.2026080.3
 	golang.org/x/time v0.16.0
 	k8s.io/api v0.37.0
 	k8s.io/apimachinery v0.37.0
