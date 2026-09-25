@@ -10,7 +10,7 @@ CLUSTER_NAME="${CLUSTER_NAME:-authentik-operator}"
 NAMESPACE="${AUTHENTIK_NAMESPACE:-authentik}"
 RELEASE="${AUTHENTIK_RELEASE:-authentik}"
 # renovate: datasource=helm depName=authentik registryUrl=https://charts.goauthentik.io
-AUTHENTIK_CHART_VERSION="${AUTHENTIK_CHART_VERSION:-2026.8.2}"
+AUTHENTIK_CHART_VERSION="${AUTHENTIK_CHART_VERSION:-2026.8.3}"
 
 if ! kind get clusters | grep -qx "${CLUSTER_NAME}"; then
   kind create cluster --name "${CLUSTER_NAME}" --wait 120s
